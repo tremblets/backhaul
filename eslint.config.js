@@ -58,6 +58,14 @@ const customRules = defineConfig({
   },
 });
 
+const cliEntrypointRules = defineConfig({
+  name: 'cli-entrypoint',
+  files: ['src/cli/index.ts'],
+  rules: {
+    'n/hashbang': 'off',
+  },
+});
+
 export default defineConfig([
   // Ignore files and folders listed in .gitignore
   includeIgnoreFile(gitignorePath),
@@ -68,4 +76,5 @@ export default defineConfig([
   // TypeScript config
   ...typescriptConfig,
   customRules,
+  cliEntrypointRules,
 ]);

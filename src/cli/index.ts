@@ -27,10 +27,9 @@ program
       const scheduler = await bootstrap(logger);
 
       await scheduler.runBackup();
-      process.exit(0);
     } catch (error) {
       logger.error({ error }, 'Error during manual backup');
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
