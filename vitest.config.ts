@@ -9,5 +9,9 @@ export default defineConfig({
       '@': './src',
     },
     setupFiles: ['./__tests__/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      reportOnFailure: true,
+    },
   },
 });

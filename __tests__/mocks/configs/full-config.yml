@@ -1,0 +1,14 @@
+schedule: '0 3 * * *'
+
+defaults:
+  retention: 5
+
+infomaniak:
+  folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890'
+
+folders:
+  - source: '/source/folder1'
+    destination: '/destination/folder1'
+  - source: '/source/folder2'
+    destination: '/destination/folder2'
+    retention: 3
