@@ -29,7 +29,9 @@ afterEach(() => {
 const createMockLogger = (): Logger => pino({ level: 'silent' });
 
 const createMockUploader = () => ({
+  name: 'KDrive',
   uploadFile: vi.fn(),
+  applyRetention: vi.fn(),
 });
 
 describe('BackupScheduler', () => {
@@ -59,6 +61,7 @@ describe('BackupScheduler', () => {
       warn: vi.fn(),
       error: vi.fn(),
       debug: vi.fn(),
+      child: vi.fn().mockReturnThis(),
     } as unknown as Logger;
 
     const entries: ResolvedFolder[] = [
@@ -67,7 +70,7 @@ describe('BackupScheduler', () => {
     ];
 
     uploader.uploadFile
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce('uploaded')
       .mockRejectedValueOnce(new Error('Upload failed'));
 
     // Mock file system calls - return one file per entry to get 2 uploadFile calls total
@@ -116,5 +119,10 @@ describe('BackupScheduler', () => {
       }),
       expect.stringContaining('Backup job completed'),
     );
+
+    // Verify that retention is applied once per destination, after the uploads
+    expect(uploader.applyRetention).toHaveBeenCalledTimes(2);
+    expect(uploader.applyRetention).toHaveBeenCalledWith('./dest1', 3);
+    expect(uploader.applyRetention).toHaveBeenCalledWith('./dest2', 3);
   });
 });

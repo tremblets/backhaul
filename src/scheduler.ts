@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -21,7 +22,7 @@ interface BackupSchedulerOptions {
 class BackupScheduler {
   readonly #options: BackupSchedulerOptions;
 
-  readonly #uploader: InfomaniakProvider;
+  readonly #provider: InfomaniakProvider;
 
   readonly #entries: ResolvedFolder[];
 
@@ -30,18 +31,20 @@ class BackupScheduler {
   #job?: Cron;
 
   constructor(
-    uploader: InfomaniakProvider,
+    provider: InfomaniakProvider,
     logger: Logger,
     entries: ResolvedFolder[],
     options: BackupSchedulerOptions,
   ) {
     this.#options = options;
     this.#entries = entries;
-    this.#uploader = uploader;
-    this.#logger = logger;
+    this.#provider = provider;
+    this.#logger = logger.child({ module: 'scheduler' });
   }
 
-  async #getFiles(): Promise<{ file: File; destination?: string; retention: Retention }[]> {
+  async #getFiles(
+    logger: Logger,
+  ): Promise<{ file: File; destination?: string; retention: Retention }[]> {
     const readLimit = pLimit(
       DEFAULT_READ_CONCURRENCY,
     );
@@ -54,7 +57,7 @@ class BackupScheduler {
           const directoryState = await stat(folder);
 
           if (!directoryState.isDirectory()) {
-            this.#logger.warn({ folder }, 'Path is not a folder');
+            logger.warn({ folder }, 'Path is not a folder');
             return [];
           }
         } catch (error) {
@@ -63,7 +66,7 @@ class BackupScheduler {
             && 'code' in error
             && error.code === 'ENOENT'
           ) {
-            this.#logger.warn({ folder }, 'Folder does not exist');
+            logger.warn({ folder }, 'Folder does not exist');
             return [];
           }
 
@@ -92,10 +95,35 @@ class BackupScheduler {
     return files.flat();
   }
 
-  async runBackup(): Promise<void> {
-    this.#logger.info('BackupScheduler: Starting backup job...');
+  async #applyRetention(
+    files: { destination?: string; retention: Retention }[],
+    logger: Logger,
+  ): Promise<void> {
+    const retentionByDestination = new Map<string | undefined, Retention>();
 
-    const files = await this.#getFiles();
+    files.forEach((fileEntry) => {
+      if (!retentionByDestination.has(fileEntry.destination)) {
+        retentionByDestination.set(fileEntry.destination, fileEntry.retention);
+      }
+    });
+
+    await Promise.allSettled(
+      [...retentionByDestination.entries()].map(async ([destination, retention]) => {
+        try {
+          await this.#provider.applyRetention(destination, retention);
+        } catch (error) {
+          logger.error({ destination, error }, 'Error applying retention');
+        }
+      }),
+    );
+  }
+
+  async runBackup(): Promise<void> {
+    const logger = this.#logger.child({ runId: randomUUID() });
+
+    logger.info('Starting backup job');
+
+    const files = await this.#getFiles(logger);
 
     const uploadLimit = pLimit(
       DEFAULT_UPLOAD_CONCURRENCY,
@@ -103,38 +131,55 @@ class BackupScheduler {
 
     const results = await Promise.allSettled(
       files.map(async (fileEntry) => uploadLimit(async () => {
-        this.#logger.info({ fileName: fileEntry.file.name }, 'BackupScheduler: Starting upload');
+        logger.info(
+          {
+            provider: this.#provider.name,
+            fileName: fileEntry.file.name,
+          },
+          'Starting file upload',
+        );
 
         try {
-          await this.#uploader.uploadFile(
+          const res = await this.#provider.uploadFile(
             fileEntry.file,
             fileEntry.destination,
-            {
-              retention: fileEntry.retention,
-            },
           );
 
-          this.#logger.info({ fileName: fileEntry.file.name }, 'BackupScheduler: Successfully uploaded');
+          if (res === 'uploaded') {
+            logger.info(
+              {
+                provider: this.#provider.name,
+                fileName: fileEntry.file.name,
+              },
+              'Successfully uploaded',
+            );
+          }
         } catch (error) {
-          this.#logger.error({ fileName: fileEntry.file.name, error }, 'BackupScheduler: Error uploading');
+          logger.error({
+            provider: this.#provider.name,
+            fileName: fileEntry.file.name,
+            error,
+          }, 'Error uploading');
 
           throw error;
         }
       })),
     );
 
+    await this.#applyRetention(files, logger);
+
     const success = results.filter((res) => res.status === 'fulfilled').length;
     const error = results.filter((res) => res.status === 'rejected').length;
 
-    this.#logger.info({ success, error }, 'BackupScheduler: Backup job completed.');
+    logger.info({ success, error }, 'Backup job completed.');
   }
 
   init(): void {
     this.#job = new Cron(
       this.#options.schedule,
       {
-        protect: () => this.#logger.warn('BackupScheduler: Job already running...'),
-        catch: (error) => this.#logger.error({ error }, 'BackupScheduler: Error during job execution:'),
+        protect: () => this.#logger.warn('Job already running...'),
+        catch: (error) => this.#logger.error({ error }, 'Error during job execution:'),
       },
       async () => this.runBackup(),
     );

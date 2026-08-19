@@ -1,15 +1,22 @@
 import bootstrap from '@/app';
 import { env } from '@/env';
+import createAppLogger from '@/logger';
+
+const logger = createAppLogger({
+  level: env.LOG_LEVEL,
+  serverVersion: env.VERSION,
+  environment: env.NODE_ENV,
+});
 
 const main = async () => {
-  const scheduler = await bootstrap();
+  const scheduler = await bootstrap(logger);
 
   scheduler.init();
 
-  console.log(`App starting, version: ${env.VERSION}, next scheduled backup: ${scheduler.nextRun()}`);
+  logger.info({ nextRun: scheduler.nextRun() }, 'App starting');
 };
 
 main().catch((error) => {
-  console.error('Error in main execution:', error);
+  logger.error({ error }, 'Error in main execution');
   throw error;
 });

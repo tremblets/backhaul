@@ -581,40 +581,7 @@ describe('Infomaniak Uploader', () => {
         response_at: Math.floor(Date.now() / 1000),
       });
 
-    // Mock file upload
-    nock('https://api.infomaniak.com')
-      .post('/3/drive/12345/upload')
-      .query({
-        file_name: 'test-file.txt',
-        total_size: '13',
-        directory_id: '67890',
-      })
-      .reply(200, {
-        result: 'success',
-        data: {
-          id: 103,
-          name: 'test-file.txt',
-          type: 'file',
-          status: 'ok',
-          visibility: 'is_in_private_space',
-          drive_id: 12345,
-          depth: 1,
-          created_by: 1,
-          created_at: 1234567893,
-          added_at: 1234567893,
-          last_modified_at: 1234567893,
-          last_modified_by: 1,
-          revised_at: 1234567893,
-          updated_at: 1234567893,
-          parent_id: 67890,
-          size: 13,
-          mime_type: 'text/plain',
-          extension_type: 'txt',
-          scan_status: 'to_be_scan',
-        },
-      });
-
-    // Mock DELETE calls for old files (keeping only 2, so delete id 100)
+    // Mock moving the oldest file to trash (keeping only the 2 most recent)
     nock('https://api.infomaniak.com')
       .delete('/2/drive/12345/files/100')
       .reply(200, {
@@ -625,8 +592,15 @@ describe('Infomaniak Uploader', () => {
         },
       });
 
-    const file = new File(['Hello, world!'], 'test-file.txt', { type: 'text/plain' });
-    await expect(uploader.uploadFile(file, undefined, { retention: 2 })).resolves.not.toThrow();
+    // Mock permanently purging it from the trash
+    nock('https://api.infomaniak.com')
+      .delete('/2/drive/12345/trash/100')
+      .reply(200, {
+        result: 'success',
+        data: true,
+      });
+
+    await expect(uploader.applyRetention(undefined, 2)).resolves.not.toThrow();
   });
 
   it('should handle retention failure gracefully without throwing', async () => {
@@ -663,40 +637,7 @@ describe('Infomaniak Uploader', () => {
         response_at: Math.floor(Date.now() / 1000),
       });
 
-    // Mock file upload
-    nock('https://api.infomaniak.com')
-      .post('/3/drive/12345/upload')
-      .query({
-        file_name: 'test-file.txt',
-        total_size: '13',
-        directory_id: '67890',
-      })
-      .reply(200, {
-        result: 'success',
-        data: {
-          id: 202,
-          name: 'test-file.txt',
-          type: 'file',
-          status: 'ok',
-          visibility: 'is_in_private_space',
-          drive_id: 12345,
-          depth: 1,
-          created_by: 1,
-          created_at: 1234567892,
-          added_at: 1234567892,
-          last_modified_at: 1234567892,
-          last_modified_by: 1,
-          revised_at: 1234567892,
-          updated_at: 1234567892,
-          parent_id: 67890,
-          size: 13,
-          mime_type: 'text/plain',
-          extension_type: 'txt',
-          scan_status: 'to_be_scan',
-        },
-      });
-
-    // Mock DELETE call that fails (HTTP error)
+    // Mock DELETE call that fails (HTTP error) - deleteFileFromTrash should never be reached
     nock('https://api.infomaniak.com')
       .delete('/2/drive/12345/files/200')
       .reply(500, {
@@ -707,9 +648,8 @@ describe('Infomaniak Uploader', () => {
         },
       });
 
-    const file = new File(['Hello, world!'], 'test-file.txt', { type: 'text/plain' });
-    // Even though DELETE fails, uploadFile should succeed (Promise.allSettled behavior)
-    await expect(uploader.uploadFile(file, undefined, { retention: 1 })).resolves.not.toThrow();
+    // Even though DELETE fails, applyRetention should succeed (Promise.allSettled behavior)
+    await expect(uploader.applyRetention(undefined, 1)).resolves.not.toThrow();
   });
 
   it('should retry transient 500 errors and eventually succeed', async () => {

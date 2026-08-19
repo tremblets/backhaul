@@ -10,10 +10,6 @@ const API_URL = 'https://api.infomaniak.com';
 const METADATA_TIMEOUT_MS = 10_000;
 const UPLOAD_TIMEOUT_MS = 300_000;
 
-export interface UploadFileOptions {
-  retention?: Retention;
-}
-
 interface InfomaniakProviderOptions {
   folderUrl: string;
   token: string;
@@ -114,6 +110,8 @@ const hashFile = async (file: File): Promise<string> => {
 };
 
 class InfomaniakProvider {
+  readonly name: string = 'KDrive';
+
   readonly #logger: Logger;
 
   readonly #token: string;
@@ -129,19 +127,12 @@ class InfomaniakProvider {
   constructor(logger: Logger, options: InfomaniakProviderOptions) {
     const { driveId, folderId } = extractIds(options.folderUrl);
 
-    this.#logger = logger;
+    this.#logger = logger.child({ module: this.name });
     this.#token = options.token;
     this.#driveId = driveId;
     this.#folderId = folderId;
   }
 
-  /**
-   * Resolves a path to a folder ID, walking one path segment at a time.
-   * Returns `null` if any segment does not exist yet: the upload endpoint
-   * creates missing directories from `directory_path` on its own, so a
-   * missing folder here just means there are no remote files to compare
-   * against yet, not that the upload should be aborted.
-   */
   async #resolveFolderId(path?: string): Promise<number | null> {
     const parts = path?.split('/').filter(Boolean) ?? [];
 
@@ -285,8 +276,20 @@ class InfomaniakProvider {
     return files;
   }
 
-  async #applyRetention(files: RemoteFile[], retention: Retention): Promise<void> {
-    if (retention === false || files.length <= retention) {
+  async #purgeFile(fileId: number): Promise<void> {
+    await this.#deleteFile(fileId);
+    await this.deleteFileFromTrash(fileId);
+  }
+
+  async applyRetention(path: string | undefined, retention: Retention): Promise<void> {
+    if (retention === false) {
+      return;
+    }
+
+    const folderId = await this.#resolveFolderId(path);
+    const files = folderId === null ? [] : await this.#listFiles(folderId);
+
+    if (files.length <= retention) {
       return;
     }
 
@@ -295,7 +298,7 @@ class InfomaniakProvider {
       .slice(retention);
 
     const results = await Promise.allSettled(
-      filesToDelete.map(async (file) => this.deleteFile(file.id)),
+      filesToDelete.map(async (file) => this.#purgeFile(file.id)),
     );
 
     const failed = results.filter(
@@ -316,8 +319,7 @@ class InfomaniakProvider {
   async uploadFile(
     file: File,
     path?: string,
-    options: UploadFileOptions = {},
-  ): Promise<void> {
+  ): Promise<'uploaded' | 'skipped'> {
     const folderId = await this.#resolveFolderId(path);
     const remoteFiles = folderId === null ? [] : await this.#listFiles(folderId);
     const remoteFile = remoteFiles.find(({ name }) => name === file.name);
@@ -333,9 +335,7 @@ class InfomaniakProvider {
           'File already exists on kDrive, skipping upload',
         );
 
-        await this.#applyRetention(remoteFiles, options.retention ?? false);
-
-        return;
+        return 'skipped';
       }
 
       this.#logger.warn(
@@ -351,7 +351,7 @@ class InfomaniakProvider {
       ...(path ? { directory_path: path } : {}),
     });
 
-    const data = await withRetry(
+    await withRetry(
       async () => {
         const response = await fetch(
           `${this.#baseV3}/${this.#driveId}/upload?${queryParams}`,
@@ -380,23 +380,10 @@ class InfomaniakProvider {
       { isRetryable: isTransientError },
     );
 
-    this.#logger.info(
-      {
-        fileName: data.data.name,
-        fileId: data.data.id,
-      },
-      'File uploaded successfully',
-    );
-
-    const updatedFiles = [
-      ...remoteFiles.filter(({ id }) => id !== remoteFile?.id),
-      data.data,
-    ];
-
-    await this.#applyRetention(updatedFiles, options.retention ?? false);
+    return 'uploaded';
   }
 
-  async deleteFile(fileId: number): Promise<void> {
+  async #deleteFile(fileId: number): Promise<void> {
     await withRetry(
       async () => {
         const response = await fetch(

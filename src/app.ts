@@ -1,17 +1,13 @@
 import { loadConfig, resolveFolders } from '@/config';
-import { env } from '@/env';
-import createAppLogger from '@/logger';
 import InfomaniakProvider from '@/providers/infomaniak.provider';
 import BackupScheduler from '@/scheduler';
 import { loadSecrets } from '@/secrets';
 
-const bootstrap = async (): Promise<BackupScheduler> => {
+import type { Logger } from 'pino';
+
+const bootstrap = async (logger: Logger): Promise<BackupScheduler> => {
   const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
-  const logger = createAppLogger({
-    level: env.LOG_LEVEL,
-    serverVersion: env.VERSION,
-    environment: env.NODE_ENV,
-  });
+
   const uploader = new InfomaniakProvider(logger, {
     folderUrl: config.infomaniak.folderUrl,
     token: secrets.INFOMANIAK_API_KEY,

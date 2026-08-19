@@ -4,6 +4,13 @@ import { Command } from 'commander';
 
 import bootstrap from '@/app';
 import { env } from '@/env';
+import createAppLogger from '@/logger';
+
+const logger = createAppLogger({
+  level: env.LOG_LEVEL,
+  serverVersion: env.VERSION,
+  environment: env.NODE_ENV,
+});
 
 const program = new Command();
 
@@ -16,15 +23,13 @@ program
   .description('Start manual backup')
   .action(async () => {
     try {
-      console.log('Starting manual backup ...');
-      const scheduler = await bootstrap();
-
-      console.log('🚀 Lancement de la sauvegarde manuelle...');
+      logger.info('Starting manual backup');
+      const scheduler = await bootstrap(logger);
 
       await scheduler.runBackup();
       process.exit(0);
     } catch (error) {
-      console.error('❌ Erreur lors de l\'exécution de la sauvegarde :', error);
+      logger.error({ error }, 'Error during manual backup');
       process.exit(1);
     }
   });
