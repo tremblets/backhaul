@@ -43,7 +43,6 @@ jobs:
         uses: hadolint/hadolint-action@v3.4.0
         with:
           dockerfile: Dockerfile
-          ignore: DL3006
 
   build:
     name: Build container

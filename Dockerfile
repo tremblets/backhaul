@@ -22,9 +22,8 @@ COPY --from=builder --chown=1000:1000 /app/package.json ./
 COPY --from=builder --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=builder --chown=1000:1000 /app/build ./build
 
-RUN chmod +x /app/build/cli/index.js
-
-RUN ln -s /app/build/cli/index.js /usr/local/bin/backup
+RUN chmod +x /app/build/cli/index.js \
+  ln -s /app/build/cli/index.js /usr/local/bin/backup
 
 USER 1000
 VOLUME ["/config", "/data"]
