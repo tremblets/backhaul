@@ -1,0 +1,8 @@
+.git
+.gitignore
+.dockerignore
+.vscode
+__tests__/
+eslint.config.js
+Dockerfile
+node_modules
