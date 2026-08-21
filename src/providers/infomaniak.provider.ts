@@ -28,7 +28,6 @@ interface RemoteFile {
   name: string;
   type: 'dir' | 'file';
   size?: number;
-  created_at: number;
   hash?: string;
 }
 
@@ -107,6 +106,21 @@ const hashFile = async (file: File): Promise<string> => {
   const hash = XXHash.XXHash3.hash(Buffer.from(buffer)).toString('hex');
 
   return `xxh3:${hash}`;
+};
+
+const BACKUP_TIMESTAMP_PATTERNS: RegExp[] = [
+  // sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip
+  /(\d{4})\.(\d{2})\.(\d{2})_(\d{2})\.(\d{2})\.(\d{2})/,
+  // jellyfin-backup-20260806103437.zip
+  /(?<!\d)(\d{14})(?!\d)/,
+];
+
+const extractBackupTimestamp = (name: string): string | null => {
+  const match = BACKUP_TIMESTAMP_PATTERNS
+    .map((pattern) => pattern.exec(name))
+    .find((result): result is RegExpExecArray => result !== null);
+
+  return match ? match.slice(1).join('') : null;
 };
 
 class InfomaniakProvider {
@@ -293,9 +307,29 @@ class InfomaniakProvider {
       return;
     }
 
+    const sortKey = (file: RemoteFile): string => {
+      const timestamp = extractBackupTimestamp(file.name);
+
+      if (!timestamp) {
+        this.#logger.warn(
+          { fileName: file.name },
+          'Could not extract a backup timestamp from file name, falling back to name comparison for retention',
+        );
+      }
+
+      return timestamp ?? file.name;
+    };
+
     const filesToDelete = [...files]
-      .sort((a, b) => b.created_at - a.created_at)
-      .slice(retention);
+      .map((file) => ({ file, key: sortKey(file) }))
+      .sort((a, b) => {
+        if (a.key === b.key) {
+          return 0;
+        }
+        return a.key < b.key ? 1 : -1;
+      })
+      .slice(retention)
+      .map(({ file }) => file);
 
     const results = await Promise.allSettled(
       filesToDelete.map(async (file) => this.#purgeFile(file.id)),

@@ -1,6 +1,5 @@
 {
   "name": "kdrive-backup",
-  "version": "0.1.0",
   "description": "",
   "homepage": "https://github.com/tremblets/kdrive-backup#readme",
   "bugs": {
@@ -29,7 +28,7 @@
     "@eslint/compat": "^2.1.0",
     "@eslint/js": "^9.39.5",
     "@types/node": "^26.2.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
     "eslint-config-airbnb-extended": "^3.2.0",
     "nock": "^14.0.17",
@@ -37,7 +36,7 @@
     "tsup": "^8.5.1",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "commander": "^15.0.0",
