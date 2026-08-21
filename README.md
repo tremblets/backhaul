@@ -6,6 +6,9 @@ Scheduled backup tool that uploads local folders to [Infomaniak kDrive](https://
 
 - On the configured cron schedule, the app reads the folders listed in your config, uploads each file to the matching kDrive destination folder, and skips files that already exist remotely with an identical hash.
 - After uploading, it applies retention per destination: only the N most recent files are kept, older ones are deleted (retention can also be disabled per folder).
+- Retention is determined by a timestamp extracted from the **file name**, not by kDrive's upload timestamp. This keeps retention correct even if a file is uploaded late (e.g. after a temporary outage or a catch-up sync) — the upload date can lag behind the backup's real age, but the file name doesn't (kDrive's API also caps how far in the past its own `created_at` can be overridden on upload, so that field can't be used to fix this up either).
+  - Recognised formats: a `YYYY.MM.DD_HH.MM.SS` timestamp anywhere in the name (e.g. `sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip`), or a compact 14-digit `YYYYMMDDHHMMSS` run (e.g. `jellyfin-backup-20260806103437.zip`).
+  - If no recognised timestamp is found, retention falls back to comparing the full file name and logs a warning — safe for names that already sort chronologically as plain strings (e.g. ISO-8601 prefixes), but incorrect for names where something other than the date (a version number, a random ID, ...) comes first.
 
 ## Image
 

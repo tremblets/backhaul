@@ -540,14 +540,14 @@ describe('Infomaniak Uploader', () => {
     ).rejects.toThrow(/Failed to find/);
   });
 
-  it('should apply retention and delete oldest files when exceeding limit', async () => {
+  it('should apply retention and delete the file with the oldest name when exceeding limit', async () => {
     const logger = createMockLogger();
     const uploader = new InfomaniakProvider(logger, {
       folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890',
       token: 'test-token',
     });
 
-    // Mock listing files - returns 3 files, each with different created_at
+    // Mock listing files - jellyfin-style compact timestamp names
     nock('https://api.infomaniak.com')
       .get('/3/drive/12345/files/67890/files')
       .query({ with: 'hash' })
@@ -556,23 +556,20 @@ describe('Infomaniak Uploader', () => {
         data: [
           {
             id: 100,
-            name: 'old-file.txt',
+            name: 'jellyfin-backup-20260819103437.zip',
             type: 'file',
-            created_at: 1234567890,
             hash: 'xxh3:hash-old',
           },
           {
             id: 101,
-            name: 'medium-file.txt',
+            name: 'jellyfin-backup-20260820103437.zip',
             type: 'file',
-            created_at: 1234567891,
             hash: 'xxh3:hash-medium',
           },
           {
             id: 102,
-            name: 'new-file.txt',
+            name: 'jellyfin-backup-20260821103437.zip',
             type: 'file',
-            created_at: 1234567892,
             hash: 'xxh3:hash-new',
           },
         ],
@@ -581,7 +578,7 @@ describe('Infomaniak Uploader', () => {
         response_at: Math.floor(Date.now() / 1000),
       });
 
-    // Mock moving the oldest file to trash (keeping only the 2 most recent)
+    // Mock moving the oldest-named file to trash (keeping only the 2 most recent)
     nock('https://api.infomaniak.com')
       .delete('/2/drive/12345/files/100')
       .reply(200, {
@@ -595,6 +592,135 @@ describe('Infomaniak Uploader', () => {
     // Mock permanently purging it from the trash
     nock('https://api.infomaniak.com')
       .delete('/2/drive/12345/trash/100')
+      .reply(200, {
+        result: 'success',
+        data: true,
+      });
+
+    await expect(uploader.applyRetention(undefined, 2)).resolves.not.toThrow();
+  });
+
+  it('should keep the most recently-named file even if it was uploaded to kDrive first (regression)', async () => {
+    const logger = createMockLogger();
+    const uploader = new InfomaniakProvider(logger, {
+      folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890',
+      token: 'test-token',
+    });
+
+    // Simulates a catch-up sync: the 08-18 backup (the oldest one) is uploaded
+    // to kDrive LAST, so its kDrive `created_at` is higher than the others even
+    // though its name is the oldest. Retention must key off the name, not
+    // `created_at`, otherwise it deletes the wrong (more recent) backup.
+    nock('https://api.infomaniak.com')
+      .get('/3/drive/12345/files/67890/files')
+      .query({ with: 'hash' })
+      .reply(200, {
+        result: 'success',
+        data: [
+          {
+            id: 300,
+            name: 'jellyfin-backup-20260819103437.zip',
+            type: 'file',
+            hash: 'xxh3:hash-19',
+          },
+          {
+            id: 301,
+            name: 'jellyfin-backup-20260820103437.zip',
+            type: 'file',
+            hash: 'xxh3:hash-20',
+          },
+          {
+            id: 302,
+            name: 'jellyfin-backup-20260821103437.zip',
+            type: 'file',
+            hash: 'xxh3:hash-21',
+          },
+          {
+            id: 303,
+            name: 'jellyfin-backup-20260818103437.zip',
+            type: 'file',
+            hash: 'xxh3:hash-18',
+          },
+        ],
+        cursor: '',
+        has_more: false,
+        response_at: Math.floor(Date.now() / 1000),
+      });
+
+    nock('https://api.infomaniak.com')
+      .delete('/2/drive/12345/files/303')
+      .reply(200, {
+        result: 'success',
+        data: {
+          cancel_id: 'cancel-303',
+          valid_until: 1234567900,
+        },
+      });
+
+    nock('https://api.infomaniak.com')
+      .delete('/2/drive/12345/trash/303')
+      .reply(200, {
+        result: 'success',
+        data: true,
+      });
+
+    await expect(uploader.applyRetention(undefined, 3)).resolves.not.toThrow();
+  });
+
+  it('should sort by the embedded date, not the full name, for version-prefixed backup names (regression)', async () => {
+    const logger = createMockLogger();
+    const uploader = new InfomaniakProvider(logger, {
+      folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890',
+      token: 'test-token',
+    });
+
+    // Sonarr/Prowlarr-style names embed the app version BEFORE the date
+    // (sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip). A naive full-name
+    // string comparison would sort primarily by the version digits ('v4.0.9...'
+    // sorts AFTER 'v4.0.19...' because '9' > '1'), which would pick the wrong
+    // file for deletion whenever the app is upgraded between two backups.
+    nock('https://api.infomaniak.com')
+      .get('/3/drive/12345/files/67890/files')
+      .query({ with: 'hash' })
+      .reply(200, {
+        result: 'success',
+        data: [
+          {
+            id: 400,
+            name: 'sonarr_backup_v4.0.9.2000_2026.08.10_22.26.05.zip',
+            type: 'file',
+            hash: 'xxh3:hash-old',
+          },
+          {
+            id: 401,
+            name: 'sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip',
+            type: 'file',
+            hash: 'xxh3:hash-medium',
+          },
+          {
+            id: 402,
+            name: 'sonarr_backup_v4.0.20.3010_2026.08.18_22.26.05.zip',
+            type: 'file',
+            hash: 'xxh3:hash-new',
+          },
+        ],
+        cursor: '',
+        has_more: false,
+        response_at: Math.floor(Date.now() / 1000),
+      });
+
+    nock('https://api.infomaniak.com')
+      .delete('/2/drive/12345/files/400')
+      .reply(200, {
+        result: 'success',
+        data: {
+          cancel_id: 'cancel-400',
+          valid_until: 1234567900,
+        },
+      });
+
+    nock('https://api.infomaniak.com')
+      .delete('/2/drive/12345/trash/400')
       .reply(200, {
         result: 'success',
         data: true,
@@ -619,16 +745,14 @@ describe('Infomaniak Uploader', () => {
         data: [
           {
             id: 200,
-            name: 'old-file.txt',
+            name: 'backup-2026-08-19.txt',
             type: 'file',
-            created_at: 1234567890,
             hash: 'xxh3:hash-old',
           },
           {
             id: 201,
-            name: 'new-file.txt',
+            name: 'backup-2026-08-20.txt',
             type: 'file',
-            created_at: 1234567891,
             hash: 'xxh3:hash-new',
           },
         ],
