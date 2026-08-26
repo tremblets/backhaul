@@ -1,13 +1,13 @@
 {
-  "name": "kdrive-backup",
+  "name": "backhaul",
   "description": "",
-  "homepage": "https://github.com/tremblets/kdrive-backup#readme",
+  "homepage": "https://github.com/tremblets/backhaul#readme",
   "bugs": {
-    "url": "https://github.com/tremblets/kdrive-backup/issues"
+    "url": "https://github.com/tremblets/backhaul/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tremblets/kdrive-backup.git"
+    "url": "git+https://github.com/tremblets/backhaul.git"
   },
   "license": "ISC",
   "author": "Sylvain Tremblet",

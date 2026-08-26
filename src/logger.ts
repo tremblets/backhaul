@@ -4,7 +4,7 @@ import type {
   DestinationStream, Level, Logger, LoggerOptions,
 } from 'pino';
 
-const SERVICE_NAME = 'kdrive-backup';
+const SERVICE_NAME = 'backhaul';
 
 interface AppLoggerOptions {
   level: Level;

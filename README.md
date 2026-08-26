@@ -1,4 +1,4 @@
-# kdrive-backup
+# backhaul
 
 Scheduled backup tool that uploads local folders to [Infomaniak kDrive](https://www.infomaniak.com/en/kdrive), with configurable retention per destination. Runs as a long-lived scheduler or as a one-off CLI command, and ships as a container image.
 
@@ -15,7 +15,7 @@ Scheduled backup tool that uploads local folders to [Infomaniak kDrive](https://
 Published to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/tremblets/kdrive-backup:latest
+docker pull ghcr.io/tremblets/backhaul:latest
 ```
 
 Tags follow semver (`1`, `1.2`, `1.2.3`, `latest`).
@@ -61,20 +61,20 @@ Provide your Infomaniak API token as `INFOMANIAK_API_KEY`, either as an environm
 
 ```bash
 docker run -d \
-  --name kdrive-backup \
+  --name backhaul \
   -e INFOMANIAK_API_KEY=<your_token> \
   -e TZ=Europe/Zurich \
   -v $(pwd)/config.yml:/config/config.yml:ro \
   -v $(pwd)/data:/data:ro \
-  ghcr.io/tremblets/kdrive-backup:latest
+  ghcr.io/tremblets/backhaul:latest
 ```
 
 ### Docker Compose
 
 ```yaml
 services:
-  kdrive-backup:
-    image: ghcr.io/tremblets/kdrive-backup:latest
+  backhaul:
+    image: ghcr.io/tremblets/backhaul:latest
     restart: unless-stopped
     environment:
       TZ: Europe/Zurich
@@ -103,7 +103,7 @@ secrets:
 The image also exposes a `backup` CLI (`/usr/local/bin/backup`) for running a single backup outside of the schedule, e.g. against a running container:
 
 ```bash
-docker exec kdrive-backup backup start
+docker exec backhaul backup start
 ```
 
 ## Volumes summary
