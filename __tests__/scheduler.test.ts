@@ -7,15 +7,24 @@ import {
 
 import BackupScheduler from '@/scheduler';
 
+import { syncDestination } from '../src/sync';
+
 import type { Logger } from 'pino';
 
 import type { ResolvedFolder } from '@/config';
-import type InfomaniakProvider from '@/providers/infomaniak.provider';
+import type { BackupProvider } from '@/providers/types';
+import type { SyncResult } from '@/sync';
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
   readdir: vi.fn(),
   stat: vi.fn(),
+}));
+
+// NOTE: mocked by relative path, not the '@/sync' alias — vi.mock does not
+// intercept aliased specifiers reliably with this project's vitest config.
+vi.mock('../src/sync', () => ({
+  syncDestination: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -28,19 +37,24 @@ afterEach(() => {
 
 const createMockLogger = (): Logger => pino({ level: 'silent' });
 
-const createMockUploader = () => ({
+const createMockProvider = (): BackupProvider => ({
   name: 'KDrive',
+  resolveDestination: vi.fn(),
+  listFiles: vi.fn(),
+  hashFile: vi.fn(),
   uploadFile: vi.fn(),
-  applyRetention: vi.fn(),
+  deleteFile: vi.fn(),
 });
+
+const emptyResult: SyncResult = { uploaded: [], skipped: [], failed: [] };
 
 describe('BackupScheduler', () => {
   it('should schedule a backup at 03:00', () => {
     vi.stubEnv('TZ', 'Europe/Zurich');
-    const uploader = createMockUploader();
+    const provider = createMockProvider();
     const logger = createMockLogger();
     const entries: ResolvedFolder[] = [{ source: './folder', destination: './dest', retention: 3 }];
-    const scheduler = new BackupScheduler(uploader as unknown as InfomaniakProvider, logger, entries, { schedule: '0 3 * * *' });
+    const scheduler = new BackupScheduler(provider, logger, entries, { schedule: '0 3 * * *' });
     scheduler.init();
     const nextRun = scheduler.nextRun();
     expect(nextRun).not.toBeNull();
@@ -54,8 +68,8 @@ describe('BackupScheduler', () => {
     scheduler.stop();
   });
 
-  it('should handle mixed success and error results', async () => {
-    const uploader = createMockUploader();
+  it('should sync once per destination and aggregate the results', async () => {
+    const provider = createMockProvider();
     const mockLogger = {
       info: vi.fn(),
       warn: vi.fn(),
@@ -69,60 +83,131 @@ describe('BackupScheduler', () => {
       { source: './folder2', destination: './dest2', retention: 3 },
     ];
 
-    uploader.uploadFile
-      .mockResolvedValueOnce('uploaded')
-      .mockRejectedValueOnce(new Error('Upload failed'));
+    vi.mocked(syncDestination)
+      .mockResolvedValueOnce({ uploaded: ['file1.txt'], skipped: [], failed: [] })
+      .mockResolvedValueOnce({ uploaded: [], skipped: [], failed: [{ name: 'file2.txt', error: new Error('Upload failed') }] });
 
-    // Mock file system calls - return one file per entry to get 2 uploadFile calls total
     vi.mocked(stat).mockResolvedValue(
-      { isDirectory: () => true } as unknown as ReturnType<typeof stat>,
+      { isDirectory: () => true } as unknown as Awaited<ReturnType<typeof stat>>,
     );
 
     vi.mocked(readdir)
       .mockResolvedValueOnce(
-        [{ name: 'file1.txt', isFile: () => true }] as unknown as ReturnType<typeof readdir>,
+        [{ name: 'file1.txt', isFile: () => true }] as unknown as Awaited<ReturnType<typeof readdir>>,
       )
       .mockResolvedValueOnce(
-        [{ name: 'file2.txt', isFile: () => true }] as unknown as ReturnType<typeof readdir>,
+        [{ name: 'file2.txt', isFile: () => true }] as unknown as Awaited<ReturnType<typeof readdir>>,
       );
 
     vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
 
-    const scheduler = new BackupScheduler(uploader as unknown as InfomaniakProvider, mockLogger, entries, { schedule: '0 3 * * *' });
+    const scheduler = new BackupScheduler(provider, mockLogger, entries, { schedule: '0 3 * * *' });
 
-    // Call runBackup which should handle mixed results with Promise.allSettled
     await scheduler.runBackup();
 
-    // Verify that uploadFile was called twice (once for each entry's single file)
-    expect(uploader.uploadFile).toHaveBeenCalledTimes(2);
+    expect(syncDestination).toHaveBeenCalledTimes(2);
+    expect(syncDestination).toHaveBeenCalledWith(
+      provider,
+      './dest1',
+      expect.arrayContaining([expect.objectContaining({ name: 'file1.txt' })]),
+      3,
+      mockLogger,
+    );
+    expect(syncDestination).toHaveBeenCalledWith(
+      provider,
+      './dest2',
+      expect.arrayContaining([expect.objectContaining({ name: 'file2.txt' })]),
+      3,
+      mockLogger,
+    );
 
-    // Verify that logger.info was called for at least one successful upload
     expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining('Successfully uploaded'),
+      { uploaded: 1, skipped: 0, failed: 1 },
+      'Backup job completed.',
     );
+  });
 
-    // Verify that logger.error was called for the failed upload
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fileName: expect.any(String),
-        error: expect.any(Error),
-      }),
-      expect.stringContaining('Error uploading'),
+  it('should not upload files that fall outside the local retention window', async () => {
+    const provider = createMockProvider();
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn().mockReturnThis(),
+    } as unknown as Logger;
+
+    const entries: ResolvedFolder[] = [
+      { source: './folder', destination: './dest', retention: 3 },
+    ];
+
+    vi.mocked(syncDestination).mockResolvedValue(emptyResult);
+    vi.mocked(stat).mockResolvedValue(
+      { isDirectory: () => true } as unknown as Awaited<ReturnType<typeof stat>>,
     );
+    vi.mocked(readdir).mockResolvedValue(
+      [
+        { name: 'jellyfin-backup-20260818000000.zip', isFile: () => true },
+        { name: 'jellyfin-backup-20260819000000.zip', isFile: () => true },
+        { name: 'jellyfin-backup-20260820000000.zip', isFile: () => true },
+        { name: 'jellyfin-backup-20260821000000.zip', isFile: () => true },
+      ] as unknown as Awaited<ReturnType<typeof readdir>>,
+    );
+    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
 
-    // Verify that runBackup completed and logged the summary
+    const scheduler = new BackupScheduler(provider, mockLogger, entries, { schedule: '0 3 * * *' });
+
+    await scheduler.runBackup();
+
+    expect(syncDestination).toHaveBeenCalledTimes(1);
+    const [, , files] = vi.mocked(syncDestination).mock.calls[0];
+    expect((files).map((file) => file.name).sort()).toEqual([
+      'jellyfin-backup-20260819000000.zip',
+      'jellyfin-backup-20260820000000.zip',
+      'jellyfin-backup-20260821000000.zip',
+    ]);
+
     expect(mockLogger.info).toHaveBeenCalledWith(
       expect.objectContaining({
-        success: 1,
-        error: 1,
+        destination: './dest',
+        prunedCount: 1,
+        files: ['jellyfin-backup-20260818000000.zip'],
       }),
-      expect.stringContaining('Backup job completed'),
+      expect.stringContaining('Skipping upload'),
     );
+  });
 
-    // Verify that retention is applied once per destination, after the uploads
-    expect(uploader.applyRetention).toHaveBeenCalledTimes(2);
-    expect(uploader.applyRetention).toHaveBeenCalledWith('./dest1', 3);
-    expect(uploader.applyRetention).toHaveBeenCalledWith('./dest2', 3);
+  it('should upload every file when retention is disabled', async () => {
+    const provider = createMockProvider();
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn().mockReturnThis(),
+    } as unknown as Logger;
+
+    const entries: ResolvedFolder[] = [
+      { source: './folder', destination: './dest', retention: false },
+    ];
+
+    vi.mocked(syncDestination).mockResolvedValue(emptyResult);
+    vi.mocked(stat).mockResolvedValue(
+      { isDirectory: () => true } as unknown as Awaited<ReturnType<typeof stat>>,
+    );
+    vi.mocked(readdir).mockResolvedValue(
+      [
+        { name: 'a.zip', isFile: () => true },
+        { name: 'b.zip', isFile: () => true },
+      ] as unknown as Awaited<ReturnType<typeof readdir>>,
+    );
+    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+
+    const scheduler = new BackupScheduler(provider, mockLogger, entries, { schedule: '0 3 * * *' });
+
+    await scheduler.runBackup();
+
+    const [, , files] = vi.mocked(syncDestination).mock.calls[0];
+    expect((files).map((file) => file.name).sort()).toEqual(['a.zip', 'b.zip']);
   });
 });

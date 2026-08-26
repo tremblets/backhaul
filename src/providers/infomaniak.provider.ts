@@ -4,7 +4,7 @@ import { HttpError, isTransientError, withRetry } from '@/lib/retry';
 
 import type { Logger } from 'pino';
 
-import type { Retention } from '@/config';
+import type { BackupProvider, ProviderFile } from './types';
 
 const API_URL = 'https://api.infomaniak.com';
 const METADATA_TIMEOUT_MS = 10_000;
@@ -101,29 +101,20 @@ const extractIds = (url: string): { driveId: number; folderId: number } => {
   return { driveId: Number(match[1]), folderId: Number(match[2]) };
 };
 
-const hashFile = async (file: File): Promise<string> => {
+const computeFileHash = async (file: File): Promise<string> => {
   const buffer = await file.arrayBuffer();
   const hash = XXHash.XXHash3.hash(Buffer.from(buffer)).toString('hex');
 
   return `xxh3:${hash}`;
 };
 
-const BACKUP_TIMESTAMP_PATTERNS: RegExp[] = [
-  // sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip
-  /(\d{4})\.(\d{2})\.(\d{2})_(\d{2})\.(\d{2})\.(\d{2})/,
-  // jellyfin-backup-20260806103437.zip
-  /(?<!\d)(\d{14})(?!\d)/,
-];
+const toProviderFile = (file: RemoteFile): ProviderFile => ({
+  id: String(file.id),
+  name: file.name,
+  hash: file.hash,
+});
 
-const extractBackupTimestamp = (name: string): string | null => {
-  const match = BACKUP_TIMESTAMP_PATTERNS
-    .map((pattern) => pattern.exec(name))
-    .find((result): result is RegExpExecArray => result !== null);
-
-  return match ? match.slice(1).join('') : null;
-};
-
-class InfomaniakProvider {
+class InfomaniakProvider implements BackupProvider {
   readonly name: string = 'KDrive';
 
   readonly #logger: Logger;
@@ -233,7 +224,7 @@ class InfomaniakProvider {
     return resolve(0, this.#folderId);
   }
 
-  async #listFiles(folderId: number): Promise<RemoteFile[]> {
+  async #listRemoteFiles(folderId: number): Promise<RemoteFile[]> {
     const files: RemoteFile[] = [];
     let cursor: string | undefined;
 
@@ -290,94 +281,93 @@ class InfomaniakProvider {
     return files;
   }
 
-  async #purgeFile(fileId: number): Promise<void> {
-    await this.#deleteFile(fileId);
-    await this.deleteFileFromTrash(fileId);
+  async #deleteFile(fileId: number): Promise<void> {
+    await withRetry(
+      async () => {
+        const response = await fetch(
+          `${this.#baseV2}/${this.#driveId}/files/${fileId.toString()}`,
+          {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${this.#token}`,
+            },
+            signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
+          },
+        );
+
+        if (!response.ok) {
+          throw new HttpError(response.status, 'Failed to initiate delete');
+        }
+
+        const data: DeleteFileResponse = await response.json();
+
+        if (data.result === 'error') {
+          throw new HttpError(400, `Delete error: ${JSON.stringify(data.error)}`);
+        }
+      },
+      { isRetryable: isTransientError },
+    );
+
+    this.#logger.info(
+      { fileId },
+      'File deleted successfully',
+    );
   }
 
-  async applyRetention(path: string | undefined, retention: Retention): Promise<void> {
-    if (retention === false) {
-      return;
-    }
-
-    const folderId = await this.#resolveFolderId(path);
-    const files = folderId === null ? [] : await this.#listFiles(folderId);
-
-    if (files.length <= retention) {
-      return;
-    }
-
-    const sortKey = (file: RemoteFile): string => {
-      const timestamp = extractBackupTimestamp(file.name);
-
-      if (!timestamp) {
-        this.#logger.warn(
-          { fileName: file.name },
-          'Could not extract a backup timestamp from file name, falling back to name comparison for retention',
+  async #deleteFileFromTrash(fileId: number): Promise<void> {
+    await withRetry(
+      async () => {
+        const response = await fetch(
+          `${this.#baseV2}/${this.#driveId}/trash/${fileId.toString()}`,
+          {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${this.#token}`,
+            },
+            signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
+          },
         );
-      }
 
-      return timestamp ?? file.name;
-    };
-
-    const filesToDelete = [...files]
-      .map((file) => ({ file, key: sortKey(file) }))
-      .sort((a, b) => {
-        if (a.key === b.key) {
-          return 0;
+        if (!response.ok) {
+          throw new HttpError(response.status, 'Failed to initiate delete from trash');
         }
-        return a.key < b.key ? 1 : -1;
-      })
-      .slice(retention)
-      .map(({ file }) => file);
 
-    const results = await Promise.allSettled(
-      filesToDelete.map(async (file) => this.#purgeFile(file.id)),
+        const data: DeleteFileFromTrashResponse = await response.json();
+
+        if (data.result === 'error') {
+          throw new HttpError(400, `Delete from trash error: ${JSON.stringify(data.error)}`);
+        }
+      },
+      { isRetryable: isTransientError },
     );
 
-    const failed = results.filter(
-      (result) => result.status === 'rejected',
+    this.#logger.info(
+      { fileId },
+      'File deleted from trash successfully',
     );
+  }
 
-    if (failed.length > 0) {
-      this.#logger.error(
-        {
-          failedCount: failed.length,
-          errors: failed.map((result) => String(result.reason)),
-        },
-        'Retention: some files could not be deleted',
-      );
-    }
+  async resolveDestination(path?: string): Promise<string | null> {
+    const folderId = await this.#resolveFolderId(path);
+
+    return folderId === null ? null : String(folderId);
+  }
+
+  async listFiles(destinationId: string): Promise<ProviderFile[]> {
+    const files = await this.#listRemoteFiles(Number(destinationId));
+
+    return files.map(toProviderFile);
+  }
+
+  // eslint-disable-next-line class-methods-use-this -- required by the BackupProvider interface
+  async hashFile(file: File): Promise<string> {
+    return computeFileHash(file);
   }
 
   async uploadFile(
     file: File,
     path?: string,
-  ): Promise<'uploaded' | 'skipped'> {
-    const folderId = await this.#resolveFolderId(path);
-    const remoteFiles = folderId === null ? [] : await this.#listFiles(folderId);
-    const remoteFile = remoteFiles.find(({ name }) => name === file.name);
-
-    if (remoteFile) {
-      const localHash = await hashFile(file);
-
-      this.#logger.debug({ localHash }, 'File hash');
-
-      if (remoteFile.hash === localHash) {
-        this.#logger.info(
-          { fileName: file.name },
-          'File already exists on kDrive, skipping upload',
-        );
-
-        return 'skipped';
-      }
-
-      this.#logger.warn(
-        { fileName: file.name },
-        'A different file with the same name already exists on kDrive',
-      );
-    }
-
+  ): Promise<void> {
     const queryParams = new URLSearchParams({
       file_name: file.name,
       total_size: file.size.toString(),
@@ -413,74 +403,13 @@ class InfomaniakProvider {
       },
       { isRetryable: isTransientError },
     );
-
-    return 'uploaded';
   }
 
-  async #deleteFile(fileId: number): Promise<void> {
-    await withRetry(
-      async () => {
-        const response = await fetch(
-          `${this.#baseV2}/${this.#driveId}/files/${fileId.toString()}`,
-          {
-            method: 'DELETE',
-            headers: {
-              Authorization: `Bearer ${this.#token}`,
-            },
-            signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
-          },
-        );
+  async deleteFile(file: ProviderFile): Promise<void> {
+    const fileId = Number(file.id);
 
-        if (!response.ok) {
-          throw new HttpError(response.status, 'Failed to initiate delete');
-        }
-
-        const data: DeleteFileResponse = await response.json();
-
-        if (data.result === 'error') {
-          throw new HttpError(400, `Delete error: ${JSON.stringify(data.error)}`);
-        }
-      },
-      { isRetryable: isTransientError },
-    );
-
-    this.#logger.info(
-      { fileId },
-      'File deleted successfully',
-    );
-  }
-
-  async deleteFileFromTrash(fileId: number): Promise<void> {
-    await withRetry(
-      async () => {
-        const response = await fetch(
-          `${this.#baseV2}/${this.#driveId}/trash/${fileId.toString()}`,
-          {
-            method: 'DELETE',
-            headers: {
-              Authorization: `Bearer ${this.#token}`,
-            },
-            signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
-          },
-        );
-
-        if (!response.ok) {
-          throw new HttpError(response.status, 'Failed to initiate delete from trash');
-        }
-
-        const data: DeleteFileFromTrashResponse = await response.json();
-
-        if (data.result === 'error') {
-          throw new HttpError(400, `Delete from trash error: ${JSON.stringify(data.error)}`);
-        }
-      },
-      { isRetryable: isTransientError },
-    );
-
-    this.#logger.info(
-      { fileId },
-      'File deleted from trash successfully',
-    );
+    await this.#deleteFile(fileId);
+    await this.#deleteFileFromTrash(fileId);
   }
 }
 
