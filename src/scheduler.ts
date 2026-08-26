@@ -164,11 +164,9 @@ class BackupScheduler {
       const files = await readFiles(group.refs);
 
       const result = await syncDestination(
-        this.#provider,
+        { provider: this.#provider, retention: group.retention, logger },
         group.destination,
         files,
-        group.retention,
-        logger,
       );
 
       uploaded.push(...result.uploaded);

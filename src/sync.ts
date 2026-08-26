@@ -15,13 +15,17 @@ export interface SyncResult {
   failed: { name: string; error: unknown }[];
 }
 
+export interface SyncContext {
+  provider: BackupProvider;
+  retention: Retention;
+  logger: Logger;
+}
+
 const purgeBeyondRetention = async (
-  provider: BackupProvider,
+  { provider, retention, logger }: SyncContext,
   files: ProviderFile[],
-  retention: number,
-  logger: Logger,
 ): Promise<void> => {
-  if (files.length <= retention) {
+  if (retention === false || files.length <= retention) {
     return;
   }
 
@@ -56,12 +60,12 @@ const purgeBeyondRetention = async (
 };
 
 export const syncDestination = async (
-  provider: BackupProvider,
+  context: SyncContext,
   path: string | undefined,
   files: File[],
-  retention: Retention,
-  logger: Logger,
 ): Promise<SyncResult> => {
+  const { provider, retention, logger } = context;
+
   if (files.length === 0 && retention === false) {
     return { uploaded: [], skipped: [], failed: [] };
   }
@@ -128,7 +132,7 @@ export const syncDestination = async (
     remoteFiles = freshDestinationId === null ? [] : await provider.listFiles(freshDestinationId);
   }
 
-  await purgeBeyondRetention(provider, remoteFiles, retention, logger);
+  await purgeBeyondRetention(context, remoteFiles);
 
   return { uploaded, skipped, failed };
 };

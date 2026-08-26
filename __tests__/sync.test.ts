@@ -28,11 +28,9 @@ describe('syncDestination', () => {
     const provider = createMockProvider({ listFiles: vi.fn().mockResolvedValue([]) });
 
     const result = await syncDestination(
-      provider,
+      { provider, retention: 3, logger: createMockLogger() },
       undefined,
       [createFile('backup.zip')],
-      3,
-      createMockLogger(),
     );
 
     expect(provider.uploadFile).toHaveBeenCalledWith(expect.anything(), undefined);
@@ -47,11 +45,9 @@ describe('syncDestination', () => {
     });
 
     const result = await syncDestination(
-      provider,
+      { provider, retention: 3, logger: createMockLogger() },
       undefined,
       [createFile('backup.zip')],
-      3,
-      createMockLogger(),
     );
 
     expect(provider.uploadFile).not.toHaveBeenCalled();
@@ -66,11 +62,9 @@ describe('syncDestination', () => {
     });
 
     const result = await syncDestination(
-      provider,
+      { provider, retention: 3, logger: createMockLogger() },
       undefined,
       [createFile('backup.zip')],
-      3,
-      createMockLogger(),
     );
 
     expect(provider.uploadFile).toHaveBeenCalledTimes(1);
@@ -83,11 +77,9 @@ describe('syncDestination', () => {
     });
 
     const result = await syncDestination(
-      provider,
+      { provider, retention: 3, logger: createMockLogger() },
       undefined,
       [createFile('backup.zip')],
-      3,
-      createMockLogger(),
     );
 
     expect(result.uploaded).toEqual([]);
@@ -101,7 +93,11 @@ describe('syncDestination', () => {
       hashFile: vi.fn().mockResolvedValue('same-hash'),
     });
 
-    await syncDestination(provider, undefined, [createFile('backup.zip')], 3, createMockLogger());
+    await syncDestination(
+      { provider, retention: 3, logger: createMockLogger() },
+      undefined,
+      [createFile('backup.zip')],
+    );
 
     expect(provider.resolveDestination).toHaveBeenCalledTimes(1);
     expect(provider.listFiles).toHaveBeenCalledTimes(1);
@@ -110,7 +106,11 @@ describe('syncDestination', () => {
   it('should re-list the destination once more after an actual upload, for retention', async () => {
     const provider = createMockProvider({ listFiles: vi.fn().mockResolvedValue([]) });
 
-    await syncDestination(provider, undefined, [createFile('backup.zip')], 3, createMockLogger());
+    await syncDestination(
+      { provider, retention: 3, logger: createMockLogger() },
+      undefined,
+      [createFile('backup.zip')],
+    );
 
     expect(provider.resolveDestination).toHaveBeenCalledTimes(2);
     expect(provider.listFiles).toHaveBeenCalledTimes(2);
@@ -119,7 +119,11 @@ describe('syncDestination', () => {
   it('should not list files at all when the destination does not exist yet and no upload happens', async () => {
     const provider = createMockProvider({ resolveDestination: vi.fn().mockResolvedValue(null) });
 
-    const result = await syncDestination(provider, 'missing/path', [], 3, createMockLogger());
+    const result = await syncDestination(
+      { provider, retention: 3, logger: createMockLogger() },
+      'missing/path',
+      [],
+    );
 
     expect(provider.listFiles).not.toHaveBeenCalled();
     expect(result).toEqual({ uploaded: [], skipped: [], failed: [] });
@@ -134,11 +138,9 @@ describe('syncDestination', () => {
     });
 
     const result = await syncDestination(
-      provider,
+      { provider, retention: 3, logger: createMockLogger() },
       'missing/path',
       [createFile('backup.zip')],
-      3,
-      createMockLogger(),
     );
 
     expect(provider.uploadFile).toHaveBeenCalledWith(expect.anything(), 'missing/path');
@@ -154,7 +156,11 @@ describe('syncDestination', () => {
       ]),
     });
 
-    await syncDestination(provider, undefined, [], false, createMockLogger());
+    await syncDestination(
+      { provider, retention: false, logger: createMockLogger() },
+      undefined,
+      [],
+    );
 
     expect(provider.listFiles).not.toHaveBeenCalled();
     expect(provider.deleteFile).not.toHaveBeenCalled();
@@ -169,7 +175,7 @@ describe('syncDestination', () => {
       ]),
     });
 
-    await syncDestination(provider, undefined, [], 2, createMockLogger());
+    await syncDestination({ provider, retention: 2, logger: createMockLogger() }, undefined, []);
 
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(
@@ -190,7 +196,7 @@ describe('syncDestination', () => {
       ]),
     });
 
-    await syncDestination(provider, undefined, [], 3, createMockLogger());
+    await syncDestination({ provider, retention: 3, logger: createMockLogger() }, undefined, []);
 
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: '303' }));
@@ -207,7 +213,7 @@ describe('syncDestination', () => {
       ]),
     });
 
-    await syncDestination(provider, undefined, [], 2, createMockLogger());
+    await syncDestination({ provider, retention: 2, logger: createMockLogger() }, undefined, []);
 
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: '400' }));
@@ -223,7 +229,7 @@ describe('syncDestination', () => {
     });
 
     await expect(
-      syncDestination(provider, undefined, [], 1, createMockLogger()),
+      syncDestination({ provider, retention: 1, logger: createMockLogger() }, undefined, []),
     ).resolves.not.toThrow();
   });
 
@@ -235,7 +241,7 @@ describe('syncDestination', () => {
       ]),
     });
 
-    await syncDestination(provider, undefined, [], 3, createMockLogger());
+    await syncDestination({ provider, retention: 3, logger: createMockLogger() }, undefined, []);
 
     expect(provider.deleteFile).not.toHaveBeenCalled();
   });

@@ -107,18 +107,14 @@ describe('BackupScheduler', () => {
 
     expect(syncDestination).toHaveBeenCalledTimes(2);
     expect(syncDestination).toHaveBeenCalledWith(
-      provider,
+      { provider, retention: 3, logger: mockLogger },
       './dest1',
       expect.arrayContaining([expect.objectContaining({ name: 'file1.txt' })]),
-      3,
-      mockLogger,
     );
     expect(syncDestination).toHaveBeenCalledWith(
-      provider,
+      { provider, retention: 3, logger: mockLogger },
       './dest2',
       expect.arrayContaining([expect.objectContaining({ name: 'file2.txt' })]),
-      3,
-      mockLogger,
     );
 
     expect(mockLogger.info).toHaveBeenCalledWith(
