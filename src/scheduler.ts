@@ -6,23 +6,86 @@ import { Cron } from 'croner';
 import pLimit from 'p-limit';
 
 import { DATA_FOLDER } from '@/config';
+import { splitByRetention } from '@/lib/backup-timestamp';
+import { syncDestination } from '@/sync';
 
 import type { Logger } from 'pino';
 
 import type { ResolvedFolder, Retention } from '@/config';
-import type InfomaniakProvider from '@/providers/infomaniak.provider';
+import type { BackupProvider } from '@/providers/types';
 
-const DEFAULT_UPLOAD_CONCURRENCY = 3;
 const DEFAULT_READ_CONCURRENCY = 10;
 
 interface BackupSchedulerOptions {
   schedule: string;
 }
 
+interface LocalFileRef {
+  name: string;
+  folder: string;
+  destination?: string;
+  retention: Retention;
+}
+
+interface DestinationGroup {
+  destination?: string;
+  retention: Retention;
+  refs: LocalFileRef[];
+}
+
+const groupByDestination = (refs: LocalFileRef[], logger: Logger): DestinationGroup[] => {
+  const groups = new Map<string | undefined, DestinationGroup>();
+
+  refs.forEach((ref) => {
+    const group = groups.get(ref.destination) ?? {
+      destination: ref.destination,
+      retention: ref.retention,
+      refs: [],
+    };
+
+    group.refs.push(ref);
+    groups.set(ref.destination, group);
+  });
+
+  return [...groups.values()].map((group) => {
+    if (group.retention === false) {
+      return group;
+    }
+
+    const { kept, beyond } = splitByRetention(group.refs, group.retention, (ref) => ref.name);
+
+    if (beyond.length > 0) {
+      logger.info(
+        {
+          destination: group.destination,
+          prunedCount: beyond.length,
+          files: beyond.map((ref) => ref.name),
+        },
+        'Skipping upload for files outside local retention window, they would be deleted immediately',
+      );
+    }
+
+    return { ...group, refs: kept };
+  });
+};
+
+const readFiles = async (refs: LocalFileRef[]): Promise<File[]> => {
+  const readLimit = pLimit(DEFAULT_READ_CONCURRENCY);
+
+  return Promise.all(
+    refs.map(async (ref) => readLimit(async () => {
+      const filePath = join(ref.folder, ref.name);
+      const buffer = await readFile(filePath);
+
+      return new File([buffer], ref.name);
+    })),
+  );
+};
+
 class BackupScheduler {
   readonly #options: BackupSchedulerOptions;
 
-  readonly #provider: InfomaniakProvider;
+  readonly #provider: BackupProvider;
 
   readonly #entries: ResolvedFolder[];
 
@@ -31,7 +94,7 @@ class BackupScheduler {
   #job?: Cron;
 
   constructor(
-    provider: InfomaniakProvider,
+    provider: BackupProvider,
     logger: Logger,
     entries: ResolvedFolder[],
     options: BackupSchedulerOptions,
@@ -42,14 +105,8 @@ class BackupScheduler {
     this.#logger = logger.child({ module: 'scheduler' });
   }
 
-  async #getFiles(
-    logger: Logger,
-  ): Promise<{ file: File; destination?: string; retention: Retention }[]> {
-    const readLimit = pLimit(
-      DEFAULT_READ_CONCURRENCY,
-    );
-
-    const files = await Promise.all(
+  async #listLocalFileRefs(logger: Logger): Promise<LocalFileRef[]> {
+    const refs = await Promise.all(
       this.#entries.map(async (entry) => {
         const folder = join(DATA_FOLDER, entry.source);
 
@@ -73,49 +130,20 @@ class BackupScheduler {
           throw error;
         }
 
-        const entries = await readdir(folder, { withFileTypes: true });
+        const dirents = await readdir(folder, { withFileTypes: true });
 
-        return Promise.all(
-          entries
-            .filter((file) => file.isFile())
-            .map(async (file) => readLimit(async () => {
-              const filePath = join(folder, file.name);
-              const buffer = await readFile(filePath);
-
-              return {
-                file: new File([buffer], file.name),
-                destination: entry.destination,
-                retention: entry.retention,
-              };
-            })),
-        );
+        return dirents
+          .filter((dirent) => dirent.isFile())
+          .map((dirent): LocalFileRef => ({
+            name: dirent.name,
+            folder,
+            destination: entry.destination,
+            retention: entry.retention,
+          }));
       }),
     );
 
-    return files.flat();
-  }
-
-  async #applyRetention(
-    files: { destination?: string; retention: Retention }[],
-    logger: Logger,
-  ): Promise<void> {
-    const retentionByDestination = new Map<string | undefined, Retention>();
-
-    files.forEach((fileEntry) => {
-      if (!retentionByDestination.has(fileEntry.destination)) {
-        retentionByDestination.set(fileEntry.destination, fileEntry.retention);
-      }
-    });
-
-    await Promise.allSettled(
-      [...retentionByDestination.entries()].map(async ([destination, retention]) => {
-        try {
-          await this.#provider.applyRetention(destination, retention);
-        } catch (error) {
-          logger.error({ destination, error }, 'Error applying retention');
-        }
-      }),
-    );
+    return refs.flat();
   }
 
   async runBackup(): Promise<void> {
@@ -123,55 +151,37 @@ class BackupScheduler {
 
     logger.info('Starting backup job');
 
-    const files = await this.#getFiles(logger);
+    const localRefs = await this.#listLocalFileRefs(logger);
+    const groups = groupByDestination(localRefs, logger);
 
-    const uploadLimit = pLimit(
-      DEFAULT_UPLOAD_CONCURRENCY,
+    const uploaded: string[] = [];
+    const skipped: string[] = [];
+    const failed: { name: string; error: unknown }[] = [];
+
+    await groups.reduce(async (previous, group) => {
+      await previous;
+
+      const files = await readFiles(group.refs);
+
+      const result = await syncDestination(
+        { provider: this.#provider, retention: group.retention, logger },
+        group.destination,
+        files,
+      );
+
+      uploaded.push(...result.uploaded);
+      skipped.push(...result.skipped);
+      failed.push(...result.failed);
+    }, Promise.resolve());
+
+    logger.info(
+      {
+        uploaded: uploaded.length,
+        skipped: skipped.length,
+        failed: failed.length,
+      },
+      'Backup job completed.',
     );
-
-    const results = await Promise.allSettled(
-      files.map(async (fileEntry) => uploadLimit(async () => {
-        logger.info(
-          {
-            provider: this.#provider.name,
-            fileName: fileEntry.file.name,
-          },
-          'Starting file upload',
-        );
-
-        try {
-          const res = await this.#provider.uploadFile(
-            fileEntry.file,
-            fileEntry.destination,
-          );
-
-          if (res === 'uploaded') {
-            logger.info(
-              {
-                provider: this.#provider.name,
-                fileName: fileEntry.file.name,
-              },
-              'Successfully uploaded',
-            );
-          }
-        } catch (error) {
-          logger.error({
-            provider: this.#provider.name,
-            fileName: fileEntry.file.name,
-            error,
-          }, 'Error uploading');
-
-          throw error;
-        }
-      })),
-    );
-
-    await this.#applyRetention(files, logger);
-
-    const success = results.filter((res) => res.status === 'fulfilled').length;
-    const error = results.filter((res) => res.status === 'rejected').length;
-
-    logger.info({ success, error }, 'Backup job completed.');
   }
 
   init(): void {
