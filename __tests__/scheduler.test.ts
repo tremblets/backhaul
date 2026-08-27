@@ -124,7 +124,7 @@ describe('BackupScheduler', () => {
     expect(mockLogger.info).toHaveBeenCalledWith(
       { nextRunTime: scheduler.nextRun() },
       'Next run',
-    )
+    );
   });
 
   it('should not upload files that fall outside the local retention window', async () => {
