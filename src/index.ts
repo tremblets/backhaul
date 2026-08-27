@@ -13,7 +13,8 @@ const main = async () => {
 
   scheduler.init();
 
-  logger.info({ nextRun: scheduler.nextRun() }, 'App starting');
+  logger.info('App starting');
+  logger.info({ nextRunTime: scheduler.nextRun() }, 'Next run');
 };
 
 main().catch((error) => {

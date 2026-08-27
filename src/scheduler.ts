@@ -55,7 +55,7 @@ const groupByDestination = (refs: LocalFileRef[], logger: Logger): DestinationGr
     const { kept, beyond } = splitByRetention(group.refs, group.retention, (ref) => ref.name);
 
     if (beyond.length > 0) {
-      logger.info(
+      logger.debug(
         {
           destination: group.destination,
           prunedCount: beyond.length,
@@ -182,6 +182,7 @@ class BackupScheduler {
       },
       'Backup job completed.',
     );
+    logger.info({ nextRunTime: this.nextRun() }, 'Next run');
   }
 
   init(): void {
