@@ -341,7 +341,7 @@ class InfomaniakProvider implements BackupProvider {
       { isRetryable: isTransientError },
     );
 
-    this.#logger.info(
+    this.#logger.debug(
       { fileId },
       'File deleted from trash successfully',
     );
@@ -375,6 +375,8 @@ class InfomaniakProvider implements BackupProvider {
       ...(path ? { directory_path: path } : {}),
     });
 
+    const body = await file.arrayBuffer();
+
     await withRetry(
       async () => {
         const response = await fetch(
@@ -384,7 +386,7 @@ class InfomaniakProvider implements BackupProvider {
             headers: {
               Authorization: `Bearer ${this.#token}`,
             },
-            body: file,
+            body,
             signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
           },
         );
