@@ -5,8 +5,6 @@ permissions:
 
 on:
   pull_request:
-    paths:
-      - '*'
 
 concurrency:
   group: ci-${{ github.ref }}
