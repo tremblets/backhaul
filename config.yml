@@ -1,4 +1,5 @@
 schedule: '0 0 * * *'
+runOnStart: false
 
 infomaniak:
   folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890'

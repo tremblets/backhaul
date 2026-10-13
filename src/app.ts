@@ -21,6 +21,7 @@ const bootstrap = async (logger: Logger): Promise<BackupScheduler> => {
     entries,
     {
       schedule: config.schedule,
+      runOnStart: config.runOnStart,
     },
   );
 

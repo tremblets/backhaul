@@ -11,9 +11,10 @@ const logger = createAppLogger({
 const main = async () => {
   const scheduler = await bootstrap(logger);
 
+  logger.info('App starting');
+
   scheduler.init();
 
-  logger.info('App starting');
   logger.info({ nextRunTime: scheduler.nextRun() }, 'Next run');
 };
 

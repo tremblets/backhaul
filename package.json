@@ -1,6 +1,7 @@
 {
   "name": "backhaul",
-  "description": "",
+  "description": "Scheduled backup of local folders to Infomaniak kDrive, with per-destination retention.",
+  "private": true,
   "homepage": "https://github.com/tremblets/backhaul#readme",
   "bugs": {
     "url": "https://github.com/tremblets/backhaul/issues"
@@ -12,7 +13,6 @@
   "license": "ISC",
   "author": "Sylvain Tremblet",
   "type": "module",
-  "main": "index.js",
   "scripts": {
     "dev": "tsx watch --env-file=.env.local src/index.ts",
     "dev:cli": "tsx watch --env-file=.env.local src/cli/index.ts",
@@ -21,9 +21,6 @@
     "lint": "eslint .",
     "build": "tsup",
     "start": "node build/index.js"
-  },
-  "bin": {
-    "backup": "./build/cli/index.js"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.1",

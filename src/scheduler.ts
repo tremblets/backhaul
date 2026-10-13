@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Cron } from 'croner';
 import pLimit from 'p-limit';
 
-import { DATA_FOLDER } from '@/config';
+import { CRON_MODE, DATA_FOLDER } from '@/config';
 import { splitByRetention } from '@/lib/backup-timestamp';
 import { syncDestination } from '@/sync';
 
@@ -18,6 +18,7 @@ const DEFAULT_READ_CONCURRENCY = 10;
 
 interface BackupSchedulerOptions {
   schedule: string;
+  runOnStart?: boolean;
 }
 
 interface LocalFileRef {
@@ -189,11 +190,18 @@ class BackupScheduler {
     this.#job = new Cron(
       this.#options.schedule,
       {
+        mode: CRON_MODE,
         protect: () => this.#logger.warn('Job already running...'),
         catch: (error) => this.#logger.error({ error }, 'Error during job execution:'),
       },
       async () => this.runBackup(),
     );
+
+    if (this.#options.runOnStart) {
+      this.#logger.info('Running backup on start');
+      // Goes through croner so `catch` handles errors and `protect` skips an overlapping tick.
+      this.#job.trigger();
+    }
   }
 
   nextRun(): string | null {
