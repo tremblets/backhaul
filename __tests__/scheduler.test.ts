@@ -1,5 +1,6 @@
 import { openAsBlob } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
+import { basename } from 'node:path';
 
 import pino from 'pino';
 import {
@@ -54,7 +55,7 @@ const createMockProvider = (): BackupProvider => ({
 
 const emptyResult: SyncResult = { uploaded: [], skipped: [], failed: [] };
 
-const emptyRunResult: BackupRunResult = { ...emptyResult, failedFolders: [] };
+const emptyRunResult: BackupRunResult = { ...emptyResult, deferred: [], failedFolders: [] };
 
 const createRecordingLogger = (): Logger => ({
   info: vi.fn(),
@@ -175,7 +176,7 @@ describe('BackupScheduler', () => {
 
     expect(mockLogger.error).toHaveBeenCalledWith(
       {
-        uploaded: 1, skipped: 0, failed: 1, failedFolders: 0,
+        uploaded: 1, skipped: 0, deferred: 0, failed: 1, failedFolders: 0,
       },
       'Backup job completed with errors.',
     );
@@ -205,7 +206,7 @@ describe('BackupScheduler', () => {
     expect(isSuccessful(result)).toBe(true);
     expect(mockLogger.info).toHaveBeenCalledWith(
       {
-        uploaded: 1, skipped: 0, failed: 0, failedFolders: 0,
+        uploaded: 1, skipped: 0, deferred: 0, failed: 0, failedFolders: 0,
       },
       'Backup job completed.',
     );
@@ -416,5 +417,123 @@ describe('BackupScheduler', () => {
 
     const [, , files] = vi.mocked(syncDestination).mock.calls[0];
     expect((files).map((file) => file.name).sort()).toEqual(['a.zip', 'b.zip']);
+  });
+});
+
+describe('BackupScheduler file eligibility', () => {
+  const entries: ResolvedFolder[] = [{ source: './folder', destination: './dest', retention: false }];
+
+  const minutesAgo = (minutes: number): number => Date.now() - minutes * 60_000;
+
+  const mockFolder = (files: Record<string, { mtimeMs: number; ctimeMs: number }>) => {
+    vi.mocked(readdir).mockResolvedValue(asDirents(Object.keys(files)));
+    vi.mocked(stat).mockImplementation(async (path) => (
+      String(path) === '/data/folder' ? folderStat : files[basename(String(path))]
+    ) as unknown as Awaited<ReturnType<typeof stat>>);
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
+    vi.mocked(syncDestination).mockResolvedValue(emptyResult);
+  };
+
+  const syncedFileNames = (): string[] => {
+    const [, , files] = vi.mocked(syncDestination).mock.calls[0];
+    return files.map((file) => file.name).sort();
+  };
+
+  it('should defer files modified more recently than minFileAge', async () => {
+    const logger = createRecordingLogger();
+    mockFolder({
+      'old.zip': { mtimeMs: minutesAgo(10), ctimeMs: minutesAgo(10) },
+      'new.zip': { mtimeMs: minutesAgo(1), ctimeMs: minutesAgo(1) },
+    });
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      logger,
+      entries,
+      { schedule: '0 3 * * *', minFileAge: 5 },
+    );
+    const result = await scheduler.runBackup();
+
+    expect(syncedFileNames()).toEqual(['old.zip']);
+    expect(result.deferred).toEqual(['new.zip']);
+    expect(isSuccessful(result)).toBe(true);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ fileName: 'new.zip' }),
+      'File modified too recently, deferring it to the next run',
+    );
+  });
+
+  it('should defer a fresh copy that kept an old modification time', async () => {
+    mockFolder({
+      'old.zip': { mtimeMs: minutesAgo(10), ctimeMs: minutesAgo(10) },
+      'copied.zip': { mtimeMs: minutesAgo(3 * 24 * 60), ctimeMs: minutesAgo(1) },
+    });
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createRecordingLogger(),
+      entries,
+      { schedule: '0 3 * * *', minFileAge: 5 },
+    );
+    const result = await scheduler.runBackup();
+
+    expect(syncedFileNames()).toEqual(['old.zip']);
+    expect(result.deferred).toEqual(['copied.zip']);
+  });
+
+  it('should not check file ages when minFileAge is 0', async () => {
+    mockFolder({ 'new.zip': { mtimeMs: minutesAgo(0), ctimeMs: minutesAgo(0) } });
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createRecordingLogger(),
+      entries,
+      { schedule: '0 3 * * *', minFileAge: 0 },
+    );
+    const result = await scheduler.runBackup();
+
+    expect(syncedFileNames()).toEqual(['new.zip']);
+    expect(result.deferred).toEqual([]);
+    expect(stat).toHaveBeenCalledTimes(1);
+  });
+
+  it('should ignore hidden files', async () => {
+    const logger = createRecordingLogger();
+    mockFolder({
+      '.backup.zip.Xa3f9c': { mtimeMs: minutesAgo(10), ctimeMs: minutesAgo(10) },
+      '.DS_Store': { mtimeMs: minutesAgo(10), ctimeMs: minutesAgo(10) },
+      'backup.zip': { mtimeMs: minutesAgo(10), ctimeMs: minutesAgo(10) },
+    });
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      logger,
+      entries,
+      { schedule: '0 3 * * *', minFileAge: 5 },
+    );
+    await scheduler.runBackup();
+
+    expect(syncedFileNames()).toEqual(['backup.zip']);
+    expect(logger.debug).toHaveBeenCalledWith(
+      { folder: '/data/folder', fileName: '.DS_Store' },
+      'Ignoring hidden file',
+    );
+  });
+
+  it('should treat a folder with only hidden files as empty', async () => {
+    const logger = createRecordingLogger();
+    mockFolder({ '.DS_Store': { mtimeMs: minutesAgo(10), ctimeMs: minutesAgo(10) } });
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      logger,
+      entries,
+      { schedule: '0 3 * * *' },
+    );
+    const result = await scheduler.runBackup();
+
+    expect(syncDestination).not.toHaveBeenCalled();
+    expect(isSuccessful(result)).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith({ folder: '/data/folder' }, 'Source folder is empty');
   });
 });

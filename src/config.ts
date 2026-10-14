@@ -81,6 +81,7 @@ const foldersSchema = z.array(z.strictObject({
 const configSchema = z.strictObject({
   schedule: cronSchema,
   runOnStart: z.boolean().default(false),
+  minFileAge: z.int().min(0).default(5),
   defaults: defaultsSchema,
   infomaniak: z.strictObject({
     folderUrl: infomaniakUrlSchema,
