@@ -13,6 +13,7 @@ import type { Logger } from 'pino';
 
 import type { ResolvedFolder, Retention } from '@/config';
 import type { BackupProvider } from '@/providers/types';
+import type { SyncResult } from '@/sync';
 
 const DEFAULT_READ_CONCURRENCY = 10;
 
@@ -21,21 +22,38 @@ interface BackupSchedulerOptions {
   runOnStart?: boolean;
 }
 
+export interface BackupRunResult extends SyncResult {
+  failedFolders: { folder: string; error: unknown }[];
+}
+
+export const isSuccessful = (result: BackupRunResult): boolean => (
+  result.failed.length === 0 && result.failedFolders.length === 0
+);
+
 interface LocalFileRef {
   name: string;
   folder: string;
-  destination?: string;
+  destination: string;
   retention: Retention;
 }
 
+interface LocalScan {
+  refs: LocalFileRef[];
+  failedFolders: BackupRunResult['failedFolders'];
+}
+
 interface DestinationGroup {
-  destination?: string;
+  destination: string;
   retention: Retention;
   refs: LocalFileRef[];
 }
 
+const isMissingPathError = (error: unknown): boolean => (
+  error instanceof Error && 'code' in error && error.code === 'ENOENT'
+);
+
 const groupByDestination = (refs: LocalFileRef[], logger: Logger): DestinationGroup[] => {
-  const groups = new Map<string | undefined, DestinationGroup>();
+  const groups = new Map<string, DestinationGroup>();
 
   refs.forEach((ref) => {
     const group = groups.get(ref.destination) ?? {
@@ -106,84 +124,103 @@ class BackupScheduler {
     this.#logger = logger.child({ module: 'scheduler' });
   }
 
-  async #listLocalFileRefs(logger: Logger): Promise<LocalFileRef[]> {
-    const refs = await Promise.all(
-      this.#entries.map(async (entry) => {
+  async #listLocalFileRefs(logger: Logger): Promise<LocalScan> {
+    const scans = await Promise.all(
+      this.#entries.map(async (entry): Promise<LocalScan> => {
         const folder = join(DATA_FOLDER, entry.source);
 
         try {
           const directoryState = await stat(folder);
 
           if (!directoryState.isDirectory()) {
-            logger.warn({ folder }, 'Path is not a folder');
-            return [];
+            throw new Error(`Source path is not a folder: ${folder}`);
           }
+
+          const dirents = await readdir(folder, { withFileTypes: true });
+
+          const refs = dirents
+            .filter((dirent) => dirent.isFile())
+            .map((dirent): LocalFileRef => ({
+              name: dirent.name,
+              folder,
+              destination: entry.destination,
+              retention: entry.retention,
+            }));
+
+          if (refs.length === 0) {
+            logger.warn({ folder }, 'Source folder is empty');
+          }
+
+          return { refs, failedFolders: [] };
         } catch (error) {
-          if (
-            error instanceof Error
-            && 'code' in error
-            && error.code === 'ENOENT'
-          ) {
-            logger.warn({ folder }, 'Folder does not exist');
-            return [];
-          }
+          logger.error(
+            { folder, error },
+            isMissingPathError(error) ? 'Source folder does not exist' : 'Could not read source folder',
+          );
 
-          throw error;
+          return { refs: [], failedFolders: [{ folder, error }] };
         }
-
-        const dirents = await readdir(folder, { withFileTypes: true });
-
-        return dirents
-          .filter((dirent) => dirent.isFile())
-          .map((dirent): LocalFileRef => ({
-            name: dirent.name,
-            folder,
-            destination: entry.destination,
-            retention: entry.retention,
-          }));
       }),
     );
 
-    return refs.flat();
+    return {
+      refs: scans.flatMap((scan) => scan.refs),
+      failedFolders: scans.flatMap((scan) => scan.failedFolders),
+    };
   }
 
-  async runBackup(): Promise<void> {
+  async runBackup(): Promise<BackupRunResult> {
     const logger = this.#logger.child({ runId: randomUUID() });
 
     logger.info('Starting backup job');
 
-    const localRefs = await this.#listLocalFileRefs(logger);
-    const groups = groupByDestination(localRefs, logger);
+    const { refs, failedFolders } = await this.#listLocalFileRefs(logger);
+    const groups = groupByDestination(refs, logger);
 
-    const uploaded: string[] = [];
-    const skipped: string[] = [];
-    const failed: { name: string; error: unknown }[] = [];
+    const result: BackupRunResult = {
+      uploaded: [],
+      skipped: [],
+      failed: [],
+      failedFolders,
+    };
 
     await groups.reduce(async (previous, group) => {
       await previous;
 
-      const files = await readFiles(group.refs);
+      try {
+        const files = await readFiles(group.refs);
 
-      const result = await syncDestination(
-        { provider: this.#provider, retention: group.retention, logger },
-        group.destination,
-        files,
-      );
+        const groupResult = await syncDestination(
+          { provider: this.#provider, retention: group.retention, logger },
+          group.destination,
+          files,
+        );
 
-      uploaded.push(...result.uploaded);
-      skipped.push(...result.skipped);
-      failed.push(...result.failed);
+        result.uploaded.push(...groupResult.uploaded);
+        result.skipped.push(...groupResult.skipped);
+        result.failed.push(...groupResult.failed);
+      } catch (error) {
+        logger.error({ destination: group.destination, error }, 'Could not sync destination');
+        result.failedFolders.push({ folder: group.destination, error });
+      }
     }, Promise.resolve());
 
-    logger.info(
-      {
-        uploaded: uploaded.length,
-        skipped: skipped.length,
-        failed: failed.length,
-      },
-      'Backup job completed.',
-    );
+    const summary = {
+      uploaded: result.uploaded.length,
+      skipped: result.skipped.length,
+      failed: result.failed.length,
+      failedFolders: result.failedFolders.length,
+    };
+
+    if (isSuccessful(result)) {
+      logger.info(summary, 'Backup job completed.');
+    } else {
+      logger.error(summary, 'Backup job completed with errors.');
+    }
+
     logger.info({ nextRunTime: this.nextRun() }, 'Next run');
+
+    return result;
   }
 
   init(): void {
@@ -194,7 +231,9 @@ class BackupScheduler {
         protect: () => this.#logger.warn('Job already running...'),
         catch: (error) => this.#logger.error({ error }, 'Error during job execution:'),
       },
-      async () => this.runBackup(),
+      async () => {
+        await this.runBackup();
+      },
     );
 
     if (this.#options.runOnStart) {
