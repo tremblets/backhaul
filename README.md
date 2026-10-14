@@ -13,7 +13,7 @@ Scheduled backup tool that uploads local folders to [Infomaniak kDrive](https://
   - If no recognised timestamp is found, retention falls back to comparing the full file name and logs a warning — safe for names that already sort chronologically as plain strings (e.g. ISO-8601 prefixes), but incorrect for names where something other than the date (a version number, a random ID, ...) comes first.
 - Files are streamed from disk for both hashing and upload, so memory use stays flat whatever the file size. kDrive's direct upload is limited to 1 GB per file: larger files are refused with an explicit error and counted as failures (support for them is tracked in [#18](https://github.com/tremblets/backhaul/issues/18)).
 - Each folder is processed independently. If a source folder is missing (e.g. a volume that isn't mounted) or can't be read, or a destination can't be synced, the error is logged and the other folders are still backed up. An empty source folder only logs a warning.
-- At the end of each run, a summary is logged: `Backup job completed.` at `info` level when everything succeeded, `Backup job completed with errors.` at `error` level when a file upload, a retention deletion or a folder failed.
+- At the end of each run, a summary is logged: `Backup job completed.` at `info` level when everything succeeded, `Backup job completed with errors.` at `error` level when a file upload, a retention deletion or a folder failed, and `Backup job stopped before completion.` at `warn` level when the app was stopped mid-run (see [Stopping](#stopping)).
 
 ## Image
 
@@ -77,6 +77,7 @@ Provide your Infomaniak API token as `INFOMANIAK_API_KEY`, either as an environm
 ```bash
 docker run -d \
   --name backhaul \
+  --stop-timeout 300 \
   -e INFOMANIAK_API_KEY=<your_token> \
   -e TZ=Europe/Zurich \
   -v $(pwd)/config.yml:/config/config.yml:ro \
@@ -91,6 +92,7 @@ services:
   backhaul:
     image: ghcr.io/tremblets/backhaul:latest
     restart: unless-stopped
+    stop_grace_period: 5m # let in-flight uploads finish on `docker compose down`
     environment:
       TZ: Europe/Zurich
     secrets:
@@ -113,6 +115,16 @@ secrets:
 | `LOG_LEVEL`             | no       | `info`       | One of `fatal`, `error`, `warn`, `info`, `debug`, `trace`. |
 | `NODE_ENV`              | no       | `production` | `development`, `test`, or `production`.                 |
 
+## Stopping
+
+On `SIGTERM` (`docker stop`, `docker compose down`) or `SIGINT`, the app stops gracefully:
+
+- uploads already in progress are allowed to finish (a failing one is no longer retried);
+- no new upload starts: the remaining files and folders are picked up by the next run;
+- retention is not applied to an interrupted run, so nothing gets deleted on the way out.
+
+Docker kills the container 10 seconds after `docker stop` by default, which is usually too short for an upload to finish. Give it more time with `stop_grace_period` (Compose) or `--stop-timeout` (`docker run`), as in the examples above: 5 minutes is enough for files up to 1 GB on most connections. A second signal cancels the uploads in progress: the app exits with code `1` as soon as the current step (hashing a file, listing a folder) is done, and the cancelled files are uploaded again on the next run.
+
 ## Running a backup manually
 
 The image also exposes a `backup` CLI (`/usr/local/bin/backup`) for running a single backup outside of the schedule, e.g. against a running container:
@@ -121,7 +133,7 @@ The image also exposes a `backup` CLI (`/usr/local/bin/backup`) for running a si
 docker exec backhaul backup start
 ```
 
-The command exits with code `0` when everything succeeded, and `1` when a file upload, a retention deletion or a folder failed (details in the logs).
+The command exits with code `0` when everything succeeded, and `1` when a file upload, a retention deletion or a folder failed (details in the logs), or when the run was stopped. `Ctrl+C` stops it gracefully like `SIGTERM` above, a second `Ctrl+C` cancels the uploads in progress and exits shortly after.
 
 ## Volumes summary
 

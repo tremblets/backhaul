@@ -4,6 +4,7 @@ import { Command } from 'commander';
 
 import bootstrap from '@/app';
 import { env } from '@/env';
+import handleShutdownSignals from '@/lib/shutdown';
 import createAppLogger from '@/logger';
 import { isSuccessful } from '@/scheduler';
 
@@ -26,6 +27,11 @@ program
     try {
       logger.info('Starting manual backup');
       const scheduler = await bootstrap(logger);
+
+      handleShutdownSignals(logger, {
+        shutdown: async () => scheduler.shutdown(),
+        cancel: () => scheduler.cancel(),
+      });
 
       const result = await scheduler.runBackup();
 

@@ -111,6 +111,30 @@ describe('Retry utilities', () => {
       expect(fn).toHaveBeenCalledTimes(3); // initial + 2 retries
     });
 
+    it('should not retry once the signal is aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const fn = vi.fn().mockRejectedValue(new Error('Network error'));
+
+      await expect(withRetry(fn, { signal: controller.signal })).rejects.toThrow('Network error');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not retry when the signal is aborted during the backoff', async () => {
+      const controller = new AbortController();
+      const fn = vi.fn().mockRejectedValue(new Error('Network error'));
+
+      const promise = withRetry(fn, { baseDelayMs: 100, signal: controller.signal });
+      const assertion = expect(promise).rejects.toThrow('Network error');
+
+      await vi.advanceTimersByTimeAsync(0);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await assertion;
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
     it('should not retry if isRetryable returns false', async () => {
       const fn = vi.fn().mockRejectedValue(new HttpError(404, 'Not found'));
 

@@ -32,6 +32,8 @@ interface WithRetryOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   isRetryable?: (error: unknown) => boolean;
+  /** Once aborted, failures are no longer retried (the attempt in progress is not cancelled). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -50,6 +52,7 @@ export async function withRetry<T>(
     baseDelayMs = 250,
     maxDelayMs = 10_000,
     isRetryable = () => true,
+    signal,
   } = options;
 
   let lastError: unknown;
@@ -61,8 +64,8 @@ export async function withRetry<T>(
     } catch (error) {
       lastError = error;
 
-      // If this was the last attempt or error is not retryable, throw immediately
-      if (attempt === retries || !isRetryable(error)) {
+      // If this was the last attempt, error is not retryable or a stop was requested, throw immediately
+      if (attempt === retries || !isRetryable(error) || signal?.aborted) {
         throw error;
       }
 
@@ -72,6 +75,10 @@ export async function withRetry<T>(
 
       // eslint-disable-next-line no-await-in-loop
       await sleep(jitteredDelay);
+
+      if (signal?.aborted) {
+        throw error;
+      }
     }
   }
 

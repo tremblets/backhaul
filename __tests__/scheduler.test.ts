@@ -53,9 +53,13 @@ const createMockProvider = (): BackupProvider => ({
   deleteFile: vi.fn(),
 });
 
-const emptyResult: SyncResult = { uploaded: [], skipped: [], failed: [] };
+const emptyResult: SyncResult = {
+  uploaded: [], skipped: [], failed: [], interrupted: [],
+};
 
-const emptyRunResult: BackupRunResult = { ...emptyResult, deferred: [], failedFolders: [] };
+const emptyRunResult: BackupRunResult = {
+  ...emptyResult, deferred: [], failedFolders: [], stopped: false,
+};
 
 const createRecordingLogger = (): Logger => ({
   info: vi.fn(),
@@ -137,8 +141,12 @@ describe('BackupScheduler', () => {
     ];
 
     vi.mocked(syncDestination)
-      .mockResolvedValueOnce({ uploaded: ['file1.txt'], skipped: [], failed: [] })
-      .mockResolvedValueOnce({ uploaded: [], skipped: [], failed: [{ name: 'file2.txt', error: new Error('Upload failed') }] });
+      .mockResolvedValueOnce({
+        uploaded: ['file1.txt'], skipped: [], failed: [], interrupted: [],
+      })
+      .mockResolvedValueOnce({
+        uploaded: [], skipped: [], failed: [{ name: 'file2.txt', error: new Error('Upload failed') }], interrupted: [],
+      });
 
     vi.mocked(stat).mockResolvedValue(
       { isDirectory: () => true } as unknown as Awaited<ReturnType<typeof stat>>,
@@ -160,12 +168,24 @@ describe('BackupScheduler', () => {
 
     expect(syncDestination).toHaveBeenCalledTimes(2);
     expect(syncDestination).toHaveBeenCalledWith(
-      { provider, retention: 3, logger: mockLogger },
+      {
+        provider,
+        retention: 3,
+        logger: mockLogger,
+        signal: expect.any(AbortSignal),
+        cancelSignal: expect.any(AbortSignal),
+      },
       './dest1',
       expect.arrayContaining([expect.objectContaining({ name: 'file1.txt' })]),
     );
     expect(syncDestination).toHaveBeenCalledWith(
-      { provider, retention: 3, logger: mockLogger },
+      {
+        provider,
+        retention: 3,
+        logger: mockLogger,
+        signal: expect.any(AbortSignal),
+        cancelSignal: expect.any(AbortSignal),
+      },
       './dest2',
       expect.arrayContaining([expect.objectContaining({ name: 'file2.txt' })]),
     );
@@ -176,7 +196,7 @@ describe('BackupScheduler', () => {
 
     expect(mockLogger.error).toHaveBeenCalledWith(
       {
-        uploaded: 1, skipped: 0, deferred: 0, failed: 1, failedFolders: 0,
+        uploaded: 1, skipped: 0, deferred: 0, interrupted: 0, failed: 1, failedFolders: 0,
       },
       'Backup job completed with errors.',
     );
@@ -189,7 +209,9 @@ describe('BackupScheduler', () => {
   it('should log a successful run at info level', async () => {
     const mockLogger = createRecordingLogger();
 
-    vi.mocked(syncDestination).mockResolvedValue({ uploaded: ['file1.txt'], skipped: [], failed: [] });
+    vi.mocked(syncDestination).mockResolvedValue({
+      uploaded: ['file1.txt'], skipped: [], failed: [], interrupted: [],
+    });
     vi.mocked(stat).mockResolvedValue(folderStat);
     vi.mocked(readdir).mockResolvedValue(asDirents(['file1.txt']));
     vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
@@ -206,11 +228,110 @@ describe('BackupScheduler', () => {
     expect(isSuccessful(result)).toBe(true);
     expect(mockLogger.info).toHaveBeenCalledWith(
       {
-        uploaded: 1, skipped: 0, deferred: 0, failed: 0, failedFolders: 0,
+        uploaded: 1, skipped: 0, deferred: 0, interrupted: 0, failed: 0, failedFolders: 0,
       },
       'Backup job completed.',
     );
     expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  it('should finish the destination in progress and skip the next ones on shutdown', async () => {
+    let releaseFirstDestination: ((result: SyncResult) => void) | undefined;
+
+    vi.mocked(syncDestination).mockImplementationOnce(async () => new Promise((resolve) => {
+      releaseFirstDestination = resolve;
+    }));
+    vi.mocked(stat).mockResolvedValue(folderStat);
+    vi.mocked(readdir)
+      .mockResolvedValueOnce(asDirents(['file1.txt']))
+      .mockResolvedValueOnce(asDirents(['file2.txt']));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createRecordingLogger(),
+      [
+        { source: './folder1', destination: './dest1', retention: 3 },
+        { source: './folder2', destination: './dest2', retention: 3 },
+      ],
+      { schedule: '0 3 * * *' },
+    );
+    scheduler.init();
+
+    const running = scheduler.runBackup();
+    await vi.waitFor(() => expect(syncDestination).toHaveBeenCalledTimes(1));
+
+    const stopping = scheduler.shutdown();
+    const [context] = vi.mocked(syncDestination).mock.calls[0];
+    expect(context.signal?.aborted).toBe(true);
+    expect(context.cancelSignal?.aborted).toBe(false);
+    expect(scheduler.nextRun()).toBeNull();
+
+    releaseFirstDestination?.({
+      uploaded: ['file1.txt'], skipped: [], failed: [], interrupted: [],
+    });
+    await stopping;
+    const result = await running;
+
+    expect(syncDestination).toHaveBeenCalledTimes(1);
+    expect(result.uploaded).toEqual(['file1.txt']);
+    expect(result.interrupted).toEqual(['file2.txt']);
+    expect(result.stopped).toBe(true);
+    expect(isSuccessful(result)).toBe(false);
+  });
+
+  it('should cancel the uploads in flight on a forced stop after shutdown', async () => {
+    let releaseDestination: ((result: SyncResult) => void) | undefined;
+
+    vi.mocked(syncDestination).mockImplementationOnce(async () => new Promise((resolve) => {
+      releaseDestination = resolve;
+    }));
+    vi.mocked(stat).mockResolvedValue(folderStat);
+    vi.mocked(readdir).mockResolvedValue(asDirents(['file1.txt']));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createRecordingLogger(),
+      [{ source: './folder1', destination: './dest1', retention: 3 }],
+      { schedule: '0 3 * * *' },
+    );
+
+    const running = scheduler.runBackup();
+    await vi.waitFor(() => expect(syncDestination).toHaveBeenCalledTimes(1));
+
+    const stopping = scheduler.shutdown();
+    scheduler.cancel();
+    const [context] = vi.mocked(syncDestination).mock.calls[0];
+    expect(context.cancelSignal?.aborted).toBe(true);
+
+    releaseDestination?.({
+      uploaded: [], skipped: [], failed: [], interrupted: ['file1.txt'],
+    });
+    await stopping;
+    const result = await running;
+
+    expect(result.interrupted).toEqual(['file1.txt']);
+    expect(result.stopped).toBe(true);
+  });
+
+  it('should not upload anything in a run started after shutdown', async () => {
+    vi.mocked(stat).mockResolvedValue(folderStat);
+    vi.mocked(readdir).mockResolvedValue(asDirents(['file1.txt']));
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createRecordingLogger(),
+      [{ source: './folder1', destination: './dest1', retention: 3 }],
+      { schedule: '0 3 * * *' },
+    );
+
+    await scheduler.shutdown();
+    const result = await scheduler.runBackup();
+
+    expect(syncDestination).not.toHaveBeenCalled();
+    expect(result.interrupted).toEqual(['file1.txt']);
+    expect(result.stopped).toBe(true);
   });
 
   it('should keep syncing the next destination when one destination fails', async () => {
@@ -219,7 +340,9 @@ describe('BackupScheduler', () => {
 
     vi.mocked(syncDestination)
       .mockRejectedValueOnce(syncError)
-      .mockResolvedValueOnce({ uploaded: ['file2.txt'], skipped: [], failed: [] });
+      .mockResolvedValueOnce({
+        uploaded: ['file2.txt'], skipped: [], failed: [], interrupted: [],
+      });
     vi.mocked(stat).mockResolvedValue(folderStat);
     vi.mocked(readdir)
       .mockResolvedValueOnce(asDirents(['file1.txt']))
@@ -262,7 +385,9 @@ describe('BackupScheduler', () => {
   ])('should report a %s source folder as a failure and back up the others', async (_, statError, message) => {
     const mockLogger = createRecordingLogger();
 
-    vi.mocked(syncDestination).mockResolvedValue({ uploaded: ['file2.txt'], skipped: [], failed: [] });
+    vi.mocked(syncDestination).mockResolvedValue({
+      uploaded: ['file2.txt'], skipped: [], failed: [], interrupted: [],
+    });
     vi.mocked(stat)
       .mockRejectedValueOnce(statError)
       .mockResolvedValueOnce(folderStat);
