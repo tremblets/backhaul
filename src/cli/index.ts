@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import bootstrap from '@/app';
 import { env } from '@/env';
 import createAppLogger from '@/logger';
+import { isSuccessful } from '@/scheduler';
 
 const logger = createAppLogger({
   level: env.LOG_LEVEL,
@@ -26,7 +27,11 @@ program
       logger.info('Starting manual backup');
       const scheduler = await bootstrap(logger);
 
-      await scheduler.runBackup();
+      const result = await scheduler.runBackup();
+
+      if (!isSuccessful(result)) {
+        process.exitCode = 1;
+      }
     } catch (error) {
       logger.error({ error }, 'Error during manual backup');
       process.exitCode = 1;

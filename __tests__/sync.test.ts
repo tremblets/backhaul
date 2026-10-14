@@ -219,18 +219,23 @@ describe('syncDestination', () => {
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: '400' }));
   });
 
-  it('should handle retention deletion failures gracefully without throwing', async () => {
+  it('should report retention deletion failures in the result without throwing', async () => {
+    const deleteError = new Error('delete failed');
     const provider = createMockProvider({
       listFiles: vi.fn().mockResolvedValue([
         { id: '200', name: 'backup-2026-08-19.txt' },
         { id: '201', name: 'backup-2026-08-20.txt' },
       ]),
-      deleteFile: vi.fn().mockRejectedValue(new Error('delete failed')),
+      deleteFile: vi.fn().mockRejectedValue(deleteError),
     });
 
-    await expect(
-      syncDestination({ provider, retention: 1, logger: createMockLogger() }, undefined, []),
-    ).resolves.not.toThrow();
+    const result = await syncDestination(
+      { provider, retention: 1, logger: createMockLogger() },
+      undefined,
+      [],
+    );
+
+    expect(result.failed).toEqual([{ name: 'backup-2026-08-19.txt', error: deleteError }]);
   });
 
   it('should do nothing when the number of remote files is within the retention limit', async () => {

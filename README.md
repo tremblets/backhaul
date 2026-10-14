@@ -9,6 +9,8 @@ Scheduled backup tool that uploads local folders to [Infomaniak kDrive](https://
 - Retention is determined by a timestamp extracted from the **file name**, not by kDrive's upload timestamp. This keeps retention correct even if a file is uploaded late (e.g. after a temporary outage or a catch-up sync) — the upload date can lag behind the backup's real age, but the file name doesn't (kDrive's API also caps how far in the past its own `created_at` can be overridden on upload, so that field can't be used to fix this up either).
   - Recognised formats: a `YYYY.MM.DD_HH.MM.SS` timestamp anywhere in the name (e.g. `sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip`), or a compact 14-digit `YYYYMMDDHHMMSS` run (e.g. `jellyfin-backup-20260806103437.zip`).
   - If no recognised timestamp is found, retention falls back to comparing the full file name and logs a warning — safe for names that already sort chronologically as plain strings (e.g. ISO-8601 prefixes), but incorrect for names where something other than the date (a version number, a random ID, ...) comes first.
+- Each folder is processed independently. If a source folder is missing (e.g. a volume that isn't mounted) or can't be read, or a destination can't be synced, the error is logged and the other folders are still backed up. An empty source folder only logs a warning.
+- At the end of each run, a summary is logged: `Backup job completed.` at `info` level when everything succeeded, `Backup job completed with errors.` at `error` level when a file upload, a retention deletion or a folder failed.
 
 ## Image
 
@@ -114,6 +116,8 @@ The image also exposes a `backup` CLI (`/usr/local/bin/backup`) for running a si
 ```bash
 docker exec backhaul backup start
 ```
+
+The command exits with code `0` when everything succeeded, and `1` when a file upload, a retention deletion or a folder failed (details in the logs).
 
 ## Volumes summary
 

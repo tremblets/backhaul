@@ -24,9 +24,9 @@ export interface SyncContext {
 const purgeBeyondRetention = async (
   { provider, retention, logger }: SyncContext,
   files: ProviderFile[],
-): Promise<void> => {
+): Promise<SyncResult['failed']> => {
   if (retention === false || files.length <= retention) {
-    return;
+    return [];
   }
 
   files.forEach((file) => {
@@ -44,19 +44,22 @@ const purgeBeyondRetention = async (
     beyond.map(async (file) => provider.deleteFile(file)),
   );
 
-  const failedDeletes = results.filter(
-    (result): result is PromiseRejectedResult => result.status === 'rejected',
-  );
+  const failedDeletes = results.flatMap((result, index) => (
+    result.status === 'rejected' ? [{ name: beyond[index].name, error: result.reason }] : []
+  ));
 
   if (failedDeletes.length > 0) {
     logger.error(
       {
         failedCount: failedDeletes.length,
-        errors: failedDeletes.map((result) => String(result.reason)),
+        fileNames: failedDeletes.map(({ name }) => name),
+        errors: failedDeletes.map(({ error }) => String(error)),
       },
       'Retention: some files could not be deleted',
     );
   }
+
+  return failedDeletes;
 };
 
 export const syncDestination = async (
@@ -132,7 +135,7 @@ export const syncDestination = async (
     remoteFiles = freshDestinationId === null ? [] : await provider.listFiles(freshDestinationId);
   }
 
-  await purgeBeyondRetention(context, remoteFiles);
+  const failedDeletes = await purgeBeyondRetention(context, remoteFiles);
 
-  return { uploaded, skipped, failed };
+  return { uploaded, skipped, failed: [...failed, ...failedDeletes] };
 };
