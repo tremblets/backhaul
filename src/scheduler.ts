@@ -22,7 +22,6 @@ const MINUTE_MS = 60_000;
 interface BackupSchedulerOptions {
   schedule: string;
   runOnStart?: boolean;
-  /** Minutes since a file's last change before it is backed up, 0 to disable. */
   minFileAge?: number;
 }
 
