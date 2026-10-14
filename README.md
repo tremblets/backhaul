@@ -23,7 +23,7 @@ Published to GitHub Container Registry:
 docker pull ghcr.io/tremblets/backhaul:latest
 ```
 
-Tags follow semver (`1`, `1.2`, `1.2.3`, `latest`).
+Tags follow semver (`1`, `1.2`, `1.2.3`, `latest`). A pre-release (e.g. `1.3.0-rc.1`) only gets its exact tag: it doesn't move `latest`, `1` or `1.3`.
 
 ## Configuration
 
