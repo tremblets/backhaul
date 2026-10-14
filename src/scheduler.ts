@@ -94,8 +94,6 @@ const readFiles = async (refs: LocalFileRef[]): Promise<File[]> => {
 
   return Promise.all(
     refs.map(async (ref) => readLimit(async () => {
-      // Disk-backed: nothing is read until the file is hashed or uploaded, and reading fails
-      // if the file changes in the meantime instead of returning truncated content.
       const blob = await openAsBlob(join(ref.folder, ref.name));
 
       return new File([blob], ref.name);

@@ -9,7 +9,6 @@ import XXHash from 'xxhash-addon';
 import { HttpError, isTransientError, withRetry } from '@/lib/retry';
 
 import type { IncomingMessage } from 'node:http';
-import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 
 import type { Logger } from 'pino';
 
@@ -112,10 +111,7 @@ const extractIds = (url: string): { driveId: number; folderId: number } => {
   return { driveId: Number(match[1]), folderId: Number(match[2]) };
 };
 
-// File.stream() is typed as the DOM ReadableStream, which Readable.fromWeb does not accept.
-const streamFile = (file: File): Readable => Readable.fromWeb(
-  file.stream() as NodeReadableStream<Uint8Array>,
-);
+const streamFile = (file: File): Readable => Readable.from(file.stream());
 
 const computeFileHash = async (file: File): Promise<string> => {
   // The binding has no runtime type checks: a hasher created without a seed buffer segfaults.
