@@ -5,6 +5,8 @@ Scheduled backup tool that uploads local folders to [Infomaniak kDrive](https://
 ## How it works
 
 - On the configured cron schedule, the app reads the folders listed in your config, uploads each file to the matching kDrive destination folder, and skips files that already exist remotely with an identical hash.
+- Only regular files directly inside each source folder are backed up. Hidden files (names starting with `.`, e.g. `.DS_Store` or `rsync` temporary files) are ignored.
+- Files changed less than `minFileAge` minutes ago (5 by default) are left for the next run, so a backup still being written or copied is never uploaded half-done. The age is taken from the most recent of the file's modification and change times, which also covers copies that preserve the original modification time (`rsync -a`, `cp -p`).
 - After uploading, it applies retention per destination: only the N most recent files are kept, older ones are deleted (retention can also be disabled per folder).
 - Retention is determined by a timestamp extracted from the **file name**, not by kDrive's upload timestamp. This keeps retention correct even if a file is uploaded late (e.g. after a temporary outage or a catch-up sync) — the upload date can lag behind the backup's real age, but the file name doesn't (kDrive's API also caps how far in the past its own `created_at` can be overridden on upload, so that field can't be used to fix this up either).
   - Recognised formats: a `YYYY.MM.DD_HH.MM.SS` timestamp anywhere in the name (e.g. `sonarr_backup_v4.0.19.2979_2026.08.14_22.26.05.zip`), or a compact 14-digit `YYYYMMDDHHMMSS` run (e.g. `jellyfin-backup-20260806103437.zip`).
@@ -34,6 +36,7 @@ Mount a `config.yml` file into `/config` inside the container. Example:
 ```yaml
 schedule: '0 0 * * *' # standard 5-field cron expression, defaults to daily at midnight
 runOnStart: false # also run a backup as soon as the container starts, defaults to false
+minFileAge: 5 # minutes since a file's last change before it is backed up (0 to disable), defaults to 5
 
 infomaniak:
   folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890' # URL of the destination kDrive folder

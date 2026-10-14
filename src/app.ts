@@ -22,6 +22,7 @@ const bootstrap = async (logger: Logger): Promise<BackupScheduler> => {
     {
       schedule: config.schedule,
       runOnStart: config.runOnStart,
+      minFileAge: config.minFileAge,
     },
   );
 

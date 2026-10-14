@@ -17,13 +17,17 @@ import type { BackupProvider } from '@/providers/types';
 import type { SyncResult } from '@/sync';
 
 const DEFAULT_READ_CONCURRENCY = 10;
+const MINUTE_MS = 60_000;
 
 interface BackupSchedulerOptions {
   schedule: string;
   runOnStart?: boolean;
+  /** Minutes since a file's last change before it is backed up, 0 to disable. */
+  minFileAge?: number;
 }
 
 export interface BackupRunResult extends SyncResult {
+  deferred: string[];
   failedFolders: { folder: string; error: unknown }[];
 }
 
@@ -40,6 +44,7 @@ interface LocalFileRef {
 
 interface LocalScan {
   refs: LocalFileRef[];
+  deferred: string[];
   failedFolders: BackupRunResult['failedFolders'];
 }
 
@@ -87,6 +92,39 @@ const groupByDestination = (refs: LocalFileRef[], logger: Logger): DestinationGr
 
     return { ...group, refs: kept };
   });
+};
+
+const splitByAge = async (
+  folder: string,
+  names: string[],
+  minFileAgeMs: number,
+  logger: Logger,
+): Promise<{ eligible: string[]; deferred: string[] }> => {
+  if (minFileAgeMs === 0) {
+    return { eligible: names, deferred: [] };
+  }
+
+  const now = Date.now();
+  const ages = await Promise.all(names.map(async (name) => {
+    const fileState = await stat(join(folder, name));
+
+    // ctime also catches copies (rsync -a, cp -p) that restore an older mtime.
+    return { name, ageMs: now - Math.max(fileState.mtimeMs, fileState.ctimeMs) };
+  }));
+
+  const deferred = ages.filter(({ ageMs }) => ageMs < minFileAgeMs);
+
+  deferred.forEach(({ name, ageMs }) => {
+    logger.info(
+      { folder, fileName: name, ageSeconds: Math.round(ageMs / 1000) },
+      'File modified too recently, deferring it to the next run',
+    );
+  });
+
+  return {
+    eligible: ages.filter(({ ageMs }) => ageMs >= minFileAgeMs).map(({ name }) => name),
+    deferred: deferred.map(({ name }) => name),
+  };
 };
 
 const readFiles = async (refs: LocalFileRef[]): Promise<File[]> => {
@@ -138,33 +176,51 @@ class BackupScheduler {
 
           const dirents = await readdir(folder, { withFileTypes: true });
 
-          const refs = dirents
+          const names = dirents
             .filter((dirent) => dirent.isFile())
-            .map((dirent): LocalFileRef => ({
-              name: dirent.name,
-              folder,
-              destination: entry.destination,
-              retention: entry.retention,
-            }));
+            .map((dirent) => dirent.name)
+            .filter((name) => {
+              if (!name.startsWith('.')) {
+                return true;
+              }
 
-          if (refs.length === 0) {
+              logger.debug({ folder, fileName: name }, 'Ignoring hidden file');
+              return false;
+            });
+
+          if (names.length === 0) {
             logger.warn({ folder }, 'Source folder is empty');
           }
 
-          return { refs, failedFolders: [] };
+          const { eligible, deferred } = await splitByAge(
+            folder,
+            names,
+            (this.#options.minFileAge ?? 0) * MINUTE_MS,
+            logger,
+          );
+
+          const refs = eligible.map((name): LocalFileRef => ({
+            name,
+            folder,
+            destination: entry.destination,
+            retention: entry.retention,
+          }));
+
+          return { refs, deferred, failedFolders: [] };
         } catch (error) {
           logger.error(
             { folder, error },
             isMissingPathError(error) ? 'Source folder does not exist' : 'Could not read source folder',
           );
 
-          return { refs: [], failedFolders: [{ folder, error }] };
+          return { refs: [], deferred: [], failedFolders: [{ folder, error }] };
         }
       }),
     );
 
     return {
       refs: scans.flatMap((scan) => scan.refs),
+      deferred: scans.flatMap((scan) => scan.deferred),
       failedFolders: scans.flatMap((scan) => scan.failedFolders),
     };
   }
@@ -174,13 +230,14 @@ class BackupScheduler {
 
     logger.info('Starting backup job');
 
-    const { refs, failedFolders } = await this.#listLocalFileRefs(logger);
+    const { refs, deferred, failedFolders } = await this.#listLocalFileRefs(logger);
     const groups = groupByDestination(refs, logger);
 
     const result: BackupRunResult = {
       uploaded: [],
       skipped: [],
       failed: [],
+      deferred,
       failedFolders,
     };
 
@@ -208,6 +265,7 @@ class BackupScheduler {
     const summary = {
       uploaded: result.uploaded.length,
       skipped: result.skipped.length,
+      deferred: result.deferred.length,
       failed: result.failed.length,
       failedFolders: result.failedFolders.length,
     };

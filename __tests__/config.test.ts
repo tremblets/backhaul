@@ -36,6 +36,7 @@ describe('Config', () => {
     expect(config).toBeDefined();
     expect(config.schedule).toEqual('0 0 * * *');
     expect(config.runOnStart).toBe(false);
+    expect(config.minFileAge).toBe(5);
     expect(config.defaults.retention).toEqual(3);
     expect(config.infomaniak.folderUrl).toBeDefined();
     expect(config.folders).toHaveLength(1);
@@ -46,6 +47,7 @@ describe('Config', () => {
 
     expect(config.schedule).toEqual('0 3 * * *');
     expect(config.runOnStart).toBe(true);
+    expect(config.minFileAge).toBe(0);
     expect(config.defaults.retention).toEqual(5);
     expect(config.infomaniak.folderUrl).toEqual('https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890');
     expect(config.folders).toHaveLength(2);
@@ -104,6 +106,11 @@ describe('Config validation', () => {
       'a schedule alias',
       { ...validConfig, schedule: '@daily' },
       'schedule: Schedule must be a standard 5-field cron expression',
+    ],
+    [
+      'a negative minFileAge',
+      { ...validConfig, minFileAge: -1 },
+      'minFileAge: ',
     ],
     [
       'an invalid cron expression',
