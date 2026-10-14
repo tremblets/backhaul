@@ -13,7 +13,8 @@ export interface BackupProvider {
 
   hashFile: (file: File) => Promise<string>;
 
-  uploadFile: (file: File, path?: string) => Promise<void>;
+  /** Once `signal` is aborted, a failed upload is no longer retried. */
+  uploadFile: (file: File, path?: string, options?: { signal?: AbortSignal }) => Promise<void>;
 
   deleteFile: (file: ProviderFile) => Promise<void>;
 }

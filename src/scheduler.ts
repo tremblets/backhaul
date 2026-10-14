@@ -28,10 +28,12 @@ interface BackupSchedulerOptions {
 export interface BackupRunResult extends SyncResult {
   deferred: string[];
   failedFolders: { folder: string; error: unknown }[];
+  /** True when a stop was requested before the run could complete. */
+  stopped: boolean;
 }
 
 export const isSuccessful = (result: BackupRunResult): boolean => (
-  result.failed.length === 0 && result.failedFolders.length === 0
+  !result.stopped && result.failed.length === 0 && result.failedFolders.length === 0
 );
 
 interface LocalFileRef {
@@ -149,6 +151,10 @@ class BackupScheduler {
 
   #job?: Cron;
 
+  #currentRun?: { controller: AbortController; promise: Promise<BackupRunResult> };
+
+  #stopRequested = false;
+
   constructor(
     provider: BackupProvider,
     logger: Logger,
@@ -225,6 +231,25 @@ class BackupScheduler {
   }
 
   async runBackup(): Promise<BackupRunResult> {
+    const controller = new AbortController();
+
+    if (this.#stopRequested) {
+      controller.abort();
+    }
+
+    const currentRun = { controller, promise: this.#run(controller.signal) };
+    this.#currentRun = currentRun;
+
+    try {
+      return await currentRun.promise;
+    } finally {
+      if (this.#currentRun === currentRun) {
+        this.#currentRun = undefined;
+      }
+    }
+  }
+
+  async #run(signal: AbortSignal): Promise<BackupRunResult> {
     const logger = this.#logger.child({ runId: randomUUID() });
 
     logger.info('Starting backup job');
@@ -236,18 +261,27 @@ class BackupScheduler {
       uploaded: [],
       skipped: [],
       failed: [],
+      interrupted: [],
       deferred,
       failedFolders,
+      stopped: false,
     };
 
     await groups.reduce(async (previous, group) => {
       await previous;
 
+      if (signal.aborted) {
+        result.interrupted.push(...group.refs.map((ref) => ref.name));
+        return;
+      }
+
       try {
         const files = await readFiles(group.refs);
 
         const groupResult = await syncDestination(
-          { provider: this.#provider, retention: group.retention, logger },
+          {
+            provider: this.#provider, retention: group.retention, logger, signal,
+          },
           group.destination,
           files,
         );
@@ -255,19 +289,28 @@ class BackupScheduler {
         result.uploaded.push(...groupResult.uploaded);
         result.skipped.push(...groupResult.skipped);
         result.failed.push(...groupResult.failed);
+        result.interrupted.push(...groupResult.interrupted);
       } catch (error) {
         logger.error({ destination: group.destination, error }, 'Could not sync destination');
         result.failedFolders.push({ folder: group.destination, error });
       }
     }, Promise.resolve());
 
+    result.stopped = signal.aborted;
+
     const summary = {
       uploaded: result.uploaded.length,
       skipped: result.skipped.length,
       deferred: result.deferred.length,
+      interrupted: result.interrupted.length,
       failed: result.failed.length,
       failedFolders: result.failedFolders.length,
     };
+
+    if (result.stopped) {
+      logger.warn(summary, 'Backup job stopped before completion.');
+      return result;
+    }
 
     if (isSuccessful(result)) {
       logger.info(summary, 'Backup job completed.');
@@ -306,6 +349,29 @@ class BackupScheduler {
 
   stop(): void {
     this.#job?.stop();
+  }
+
+  /**
+   * Stops the schedule, then waits for the current run: uploads in flight finish (without
+   * retries), nothing new starts and retention is skipped.
+   */
+  async shutdown(): Promise<void> {
+    this.#stopRequested = true;
+    this.stop();
+
+    const currentRun = this.#currentRun;
+
+    if (!currentRun) {
+      return;
+    }
+
+    currentRun.controller.abort();
+
+    try {
+      await currentRun.promise;
+    } catch {
+      // Already reported by whoever started the run.
+    }
   }
 }
 

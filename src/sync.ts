@@ -13,12 +13,16 @@ export interface SyncResult {
   uploaded: string[];
   skipped: string[];
   failed: { name: string; error: unknown }[];
+  /** Files not processed because a stop was requested. */
+  interrupted: string[];
 }
 
 export interface SyncContext {
   provider: BackupProvider;
   retention: Retention;
   logger: Logger;
+  /** Once aborted, no new upload starts and retention is skipped; in-flight uploads finish. */
+  signal?: AbortSignal;
 }
 
 const purgeBeyondRetention = async (
@@ -67,10 +71,14 @@ export const syncDestination = async (
   path: string | undefined,
   files: File[],
 ): Promise<SyncResult> => {
-  const { provider, retention, logger } = context;
+  const {
+    provider, retention, logger, signal,
+  } = context;
 
   if (files.length === 0 && retention === false) {
-    return { uploaded: [], skipped: [], failed: [] };
+    return {
+      uploaded: [], skipped: [], failed: [], interrupted: [],
+    };
   }
 
   const destinationId = await provider.resolveDestination(path);
@@ -79,11 +87,17 @@ export const syncDestination = async (
   const uploaded: string[] = [];
   const skipped: string[] = [];
   const failed: { name: string; error: unknown }[] = [];
+  const interrupted: string[] = [];
 
   const uploadLimit = pLimit(DEFAULT_UPLOAD_CONCURRENCY);
 
   const results = await Promise.allSettled(
     files.map(async (file) => uploadLimit(async () => {
+      if (signal?.aborted) {
+        interrupted.push(file.name);
+        return;
+      }
+
       const remoteFile = remoteFiles.find(({ name }) => name === file.name);
 
       if (remoteFile) {
@@ -105,7 +119,7 @@ export const syncDestination = async (
         );
       }
 
-      await provider.uploadFile(file, path);
+      await provider.uploadFile(file, path, { signal });
 
       logger.info({ fileName: file.name }, 'Successfully uploaded');
 
@@ -126,8 +140,25 @@ export const syncDestination = async (
     }
   });
 
+  if (interrupted.length > 0) {
+    logger.warn(
+      { files: interrupted },
+      'Stop requested, these files will be processed on the next run',
+    );
+  }
+
   if (retention === false) {
-    return { uploaded, skipped, failed };
+    return {
+      uploaded, skipped, failed, interrupted,
+    };
+  }
+
+  if (signal?.aborted) {
+    logger.info('Stop requested, skipping retention');
+
+    return {
+      uploaded, skipped, failed, interrupted,
+    };
   }
 
   if (uploaded.length > 0) {
@@ -137,5 +168,7 @@ export const syncDestination = async (
 
   const failedDeletes = await purgeBeyondRetention(context, remoteFiles);
 
-  return { uploaded, skipped, failed: [...failed, ...failedDeletes] };
+  return {
+    uploaded, skipped, failed: [...failed, ...failedDeletes], interrupted,
+  };
 };

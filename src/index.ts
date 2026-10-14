@@ -1,5 +1,6 @@
 import bootstrap from '@/app';
 import { env } from '@/env';
+import handleShutdownSignals from '@/lib/shutdown';
 import createAppLogger from '@/logger';
 
 const logger = createAppLogger({
@@ -12,6 +13,11 @@ const main = async () => {
   const scheduler = await bootstrap(logger);
 
   logger.info('App starting');
+
+  handleShutdownSignals(logger, async () => {
+    await scheduler.shutdown();
+    logger.info('Stopped');
+  });
 
   scheduler.init();
 

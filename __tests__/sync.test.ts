@@ -33,8 +33,14 @@ describe('syncDestination', () => {
       [createFile('backup.zip')],
     );
 
-    expect(provider.uploadFile).toHaveBeenCalledWith(expect.anything(), undefined);
-    expect(result).toEqual({ uploaded: ['backup.zip'], skipped: [], failed: [] });
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      { signal: undefined },
+    );
+    expect(result).toEqual({
+      uploaded: ['backup.zip'], skipped: [], failed: [], interrupted: [],
+    });
   });
 
   it('should skip a file whose remote hash matches the local hash', async () => {
@@ -51,7 +57,9 @@ describe('syncDestination', () => {
     );
 
     expect(provider.uploadFile).not.toHaveBeenCalled();
-    expect(result).toEqual({ uploaded: [], skipped: ['backup.zip'], failed: [] });
+    expect(result).toEqual({
+      uploaded: [], skipped: ['backup.zip'], failed: [], interrupted: [],
+    });
   });
 
   it('should overwrite a file whose remote hash differs from the local hash', async () => {
@@ -126,7 +134,9 @@ describe('syncDestination', () => {
     );
 
     expect(provider.listFiles).not.toHaveBeenCalled();
-    expect(result).toEqual({ uploaded: [], skipped: [], failed: [] });
+    expect(result).toEqual({
+      uploaded: [], skipped: [], failed: [], interrupted: [],
+    });
   });
 
   it('should upload a file directly when the destination does not exist yet', async () => {
@@ -143,8 +153,10 @@ describe('syncDestination', () => {
       [createFile('backup.zip')],
     );
 
-    expect(provider.uploadFile).toHaveBeenCalledWith(expect.anything(), 'missing/path');
-    expect(result).toEqual({ uploaded: ['backup.zip'], skipped: [], failed: [] });
+    expect(provider.uploadFile).toHaveBeenCalledWith(expect.anything(), 'missing/path', { signal: undefined });
+    expect(result).toEqual({
+      uploaded: ['backup.zip'], skipped: [], failed: [], interrupted: [],
+    });
     expect(provider.resolveDestination).toHaveBeenCalledTimes(2);
   });
 
@@ -236,6 +248,44 @@ describe('syncDestination', () => {
     );
 
     expect(result.failed).toEqual([{ name: 'backup-2026-08-19.txt', error: deleteError }]);
+  });
+
+  it('should let in-flight uploads finish but start no new one nor apply retention once stopped', async () => {
+    const controller = new AbortController();
+    const finishUploads: (() => void)[] = [];
+    const provider = createMockProvider({
+      listFiles: vi.fn().mockResolvedValue([
+        { id: '1', name: 'backup-2026-08-01.zip' },
+        { id: '2', name: 'backup-2026-08-02.zip' },
+      ]),
+      uploadFile: vi.fn().mockImplementation(async () => new Promise<void>((resolve) => {
+        finishUploads.push(resolve);
+      })),
+    });
+    const files = ['a.zip', 'b.zip', 'c.zip', 'd.zip'].map((name) => createFile(name));
+
+    const syncing = syncDestination(
+      {
+        provider, retention: 1, logger: createMockLogger(), signal: controller.signal,
+      },
+      undefined,
+      files,
+    );
+
+    await vi.waitFor(() => expect(provider.uploadFile).toHaveBeenCalledTimes(3));
+    controller.abort();
+    finishUploads.forEach((finish) => finish());
+    const result = await syncing;
+
+    expect(result.uploaded.sort()).toEqual(['a.zip', 'b.zip', 'c.zip']);
+    expect(result.interrupted).toEqual(['d.zip']);
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      { signal: controller.signal },
+    );
+    expect(provider.listFiles).toHaveBeenCalledTimes(1);
+    expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
   it('should do nothing when the number of remote files is within the retention limit', async () => {

@@ -422,6 +422,7 @@ class InfomaniakProvider implements BackupProvider {
   async uploadFile(
     file: File,
     path?: string,
+    options: { signal?: AbortSignal } = {},
   ): Promise<void> {
     if (file.size > MAX_DIRECT_UPLOAD_SIZE) {
       throw new Error(
@@ -456,7 +457,7 @@ class InfomaniakProvider implements BackupProvider {
 
         return parsedData;
       },
-      { isRetryable: isTransientError },
+      { isRetryable: isTransientError, signal: options.signal },
     );
   }
 
