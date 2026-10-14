@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import nock from 'nock';
 import pino from 'pino';
 import {
@@ -42,6 +44,16 @@ describe('InfomaniakProvider', () => {
 
       const buffer = await file.arrayBuffer();
       const expectedHash = `xxh3:${XXHash.XXHash3.hash(Buffer.from(buffer)).toString('hex')}`;
+
+      await expect(uploader.hashFile(file)).resolves.toBe(expectedHash);
+    });
+
+    it('should hash content spanning several stream chunks like a one-shot hash', async () => {
+      const uploader = createUploader(createMockLogger());
+      const content = randomBytes(300_000);
+      const file = new File([content], 'backup.zip');
+
+      const expectedHash = `xxh3:${XXHash.XXHash3.hash(content).toString('hex')}`;
 
       await expect(uploader.hashFile(file)).resolves.toBe(expectedHash);
     });
@@ -261,6 +273,60 @@ describe('InfomaniakProvider', () => {
 
       const file = new File(['Hello, world!'], 'test-file.txt', { type: 'text/plain' });
       await expect(uploader.uploadFile(file)).rejects.toThrow('Upload error');
+    });
+
+    it('should stream the whole file with its Content-Length', async () => {
+      const uploader = createUploader(createMockLogger());
+      const content = 'x'.repeat(200_000);
+
+      const scope = nock('https://api.infomaniak.com')
+        .matchHeader('content-length', '200000')
+        .post('/3/drive/12345/upload', content)
+        .query({ file_name: 'backup.zip', total_size: '200000', directory_id: '67890' })
+        .reply(200, { result: 'success', data: { id: 1234, name: 'backup.zip' } });
+
+      await uploader.uploadFile(new File([content], 'backup.zip'));
+
+      expect(scope.isDone()).toBe(true);
+    });
+
+    it('should resend the whole file when retrying after a transient error', async () => {
+      const uploader = createUploader(createMockLogger());
+      const content = 'Hello, world!';
+      const query = { file_name: 'test-file.txt', total_size: '13', directory_id: '67890' };
+
+      const scope = nock('https://api.infomaniak.com')
+        .post('/3/drive/12345/upload', content)
+        .query(query)
+        .reply(500, 'Internal Server Error')
+        .post('/3/drive/12345/upload', content)
+        .query(query)
+        .reply(200, { result: 'success', data: { id: 1234, name: 'test-file.txt' } });
+
+      await uploader.uploadFile(new File([content], 'test-file.txt'));
+
+      expect(scope.isDone()).toBe(true);
+    });
+
+    it('should reject cleanly when the connection fails during the upload', async () => {
+      const uploader = createUploader(createMockLogger());
+
+      nock('https://api.infomaniak.com')
+        .post('/3/drive/12345/upload')
+        .query(true)
+        .times(4)
+        .replyWithError('socket hang up');
+
+      await expect(uploader.uploadFile(new File(['Hello, world!'], 'test-file.txt')))
+        .rejects.toThrow('socket hang up');
+    });
+
+    it('should refuse files larger than 1 GiB without sending anything', async () => {
+      const uploader = createUploader(createMockLogger());
+      const file = new File(['x'], 'huge.zip');
+      Object.defineProperty(file, 'size', { value: 2 ** 30 + 1 });
+
+      await expect(uploader.uploadFile(file)).rejects.toThrow('larger than 1 GiB');
     });
   });
 

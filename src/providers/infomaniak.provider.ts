@@ -1,6 +1,14 @@
+import { once } from 'node:events';
+import { request } from 'node:https';
+import { Readable, Writable } from 'node:stream';
+import { text } from 'node:stream/consumers';
+import { pipeline } from 'node:stream/promises';
+
 import XXHash from 'xxhash-addon';
 
 import { HttpError, isTransientError, withRetry } from '@/lib/retry';
+
+import type { IncomingMessage } from 'node:http';
 
 import type { Logger } from 'pino';
 
@@ -8,7 +16,9 @@ import type { BackupProvider, ProviderFile } from './types';
 
 const API_URL = 'https://api.infomaniak.com';
 const METADATA_TIMEOUT_MS = 10_000;
-const UPLOAD_TIMEOUT_MS = 300_000;
+const UPLOAD_IDLE_TIMEOUT_MS = 120_000;
+// kDrive's direct upload does not accept files larger than 1 GB, they need an upload session.
+const MAX_DIRECT_UPLOAD_SIZE = 2 ** 30;
 
 interface InfomaniakProviderOptions {
   folderUrl: string;
@@ -101,11 +111,56 @@ const extractIds = (url: string): { driveId: number; folderId: number } => {
   return { driveId: Number(match[1]), folderId: Number(match[2]) };
 };
 
-const computeFileHash = async (file: File): Promise<string> => {
-  const buffer = await file.arrayBuffer();
-  const hash = XXHash.XXHash3.hash(Buffer.from(buffer)).toString('hex');
+const streamFile = (file: File): Readable => Readable.from(file.stream());
 
-  return `xxh3:${hash}`;
+const computeFileHash = async (file: File): Promise<string> => {
+  // The binding has no runtime type checks: a hasher created without a seed buffer segfaults.
+  const hasher = new XXHash.XXHash3(Buffer.alloc(8));
+
+  await pipeline(
+    streamFile(file),
+    new Writable({
+      write(chunk: Uint8Array, _encoding, callback) {
+        hasher.update(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+        callback();
+      },
+    }),
+  );
+
+  return `xxh3:${hasher.digest().toString('hex')}`;
+};
+
+// Streams the file through node:https: fetch buffers the whole request body in memory.
+const postFile = async (
+  url: string,
+  token: string,
+  file: File,
+): Promise<{ status: number; body: string }> => {
+  const req = request(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Length': file.size,
+    },
+  });
+
+  req.setTimeout(UPLOAD_IDLE_TIMEOUT_MS, () => {
+    req.destroy(new Error(`Upload timed out after ${UPLOAD_IDLE_TIMEOUT_MS / 1000}s without activity`));
+  });
+
+  const [sent, responded] = await Promise.allSettled([
+    pipeline(streamFile(file), req),
+    once(req, 'response') as Promise<[IncomingMessage]>,
+  ]);
+
+  // An early response (e.g. 401) wins over the write error caused by the server closing the socket.
+  if (responded.status === 'rejected') {
+    throw sent.status === 'rejected' ? sent.reason : responded.reason;
+  }
+
+  const [response] = responded.value;
+
+  return { status: response.statusCode ?? 0, body: await text(response) };
 };
 
 const toProviderFile = (file: RemoteFile): ProviderFile => ({
@@ -368,6 +423,12 @@ class InfomaniakProvider implements BackupProvider {
     file: File,
     path?: string,
   ): Promise<void> {
+    if (file.size > MAX_DIRECT_UPLOAD_SIZE) {
+      throw new Error(
+        `File is larger than 1 GiB (${file.size} bytes), which kDrive's direct upload does not support`,
+      );
+    }
+
     const queryParams = new URLSearchParams({
       file_name: file.name,
       total_size: file.size.toString(),
@@ -375,27 +436,19 @@ class InfomaniakProvider implements BackupProvider {
       ...(path ? { directory_path: path } : {}),
     });
 
-    const body = await file.arrayBuffer();
-
     await withRetry(
       async () => {
-        const response = await fetch(
+        const response = await postFile(
           `${this.#baseV3}/${this.#driveId}/upload?${queryParams}`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${this.#token}`,
-            },
-            body,
-            signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
-          },
+          this.#token,
+          file,
         );
 
-        if (!response.ok) {
+        if (response.status < 200 || response.status >= 300) {
           throw new HttpError(response.status, `Failed to initiate upload (HTTP ${response.status})`);
         }
 
-        const parsedData: UploadResponse = await response.json();
+        const parsedData: UploadResponse = JSON.parse(response.body);
 
         if (parsedData.result === 'error') {
           throw new HttpError(400, `Upload error: ${JSON.stringify(parsedData.error)}`);

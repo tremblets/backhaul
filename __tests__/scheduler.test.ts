@@ -1,4 +1,5 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { openAsBlob } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 
 import pino from 'pino';
 import {
@@ -16,8 +17,12 @@ import type { BackupProvider } from '@/providers/types';
 import type { BackupRunResult } from '@/scheduler';
 import type { SyncResult } from '@/sync';
 
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  openAsBlob: vi.fn(),
+}));
+
 vi.mock('node:fs/promises', () => ({
-  readFile: vi.fn(),
   readdir: vi.fn(),
   stat: vi.fn(),
 }));
@@ -146,7 +151,7 @@ describe('BackupScheduler', () => {
         [{ name: 'file2.txt', isFile: () => true }] as unknown as Awaited<ReturnType<typeof readdir>>,
       );
 
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
 
     const scheduler = new BackupScheduler(provider, mockLogger, entries, { schedule: '0 3 * * *' });
 
@@ -186,7 +191,7 @@ describe('BackupScheduler', () => {
     vi.mocked(syncDestination).mockResolvedValue({ uploaded: ['file1.txt'], skipped: [], failed: [] });
     vi.mocked(stat).mockResolvedValue(folderStat);
     vi.mocked(readdir).mockResolvedValue(asDirents(['file1.txt']));
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
 
     const scheduler = new BackupScheduler(
       createMockProvider(),
@@ -218,7 +223,7 @@ describe('BackupScheduler', () => {
     vi.mocked(readdir)
       .mockResolvedValueOnce(asDirents(['file1.txt']))
       .mockResolvedValueOnce(asDirents(['file2.txt']));
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
 
     const scheduler = new BackupScheduler(
       createMockProvider(),
@@ -261,7 +266,7 @@ describe('BackupScheduler', () => {
       .mockRejectedValueOnce(statError)
       .mockResolvedValueOnce(folderStat);
     vi.mocked(readdir).mockResolvedValue(asDirents(['file2.txt']));
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
 
     const scheduler = new BackupScheduler(
       createMockProvider(),
@@ -355,7 +360,7 @@ describe('BackupScheduler', () => {
         { name: 'jellyfin-backup-20260821000000.zip', isFile: () => true },
       ] as unknown as Awaited<ReturnType<typeof readdir>>,
     );
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
 
     const scheduler = new BackupScheduler(provider, mockLogger, entries, { schedule: '0 3 * * *' });
 
@@ -403,7 +408,7 @@ describe('BackupScheduler', () => {
         { name: 'b.zip', isFile: () => true },
       ] as unknown as Awaited<ReturnType<typeof readdir>>,
     );
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('test content'));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
 
     const scheduler = new BackupScheduler(provider, mockLogger, entries, { schedule: '0 3 * * *' });
 
