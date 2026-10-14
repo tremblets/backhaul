@@ -288,6 +288,30 @@ describe('syncDestination', () => {
     expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
+  it('should not start an upload when a stop is requested while hashing the file', async () => {
+    const controller = new AbortController();
+    const provider = createMockProvider({
+      listFiles: vi.fn().mockResolvedValue([{ id: '1', name: 'backup.zip', hash: 'old-hash' }]),
+      hashFile: vi.fn().mockImplementation(async () => {
+        controller.abort();
+        return 'new-hash';
+      }),
+    });
+
+    const result = await syncDestination(
+      {
+        provider, retention: 3, logger: createMockLogger(), signal: controller.signal,
+      },
+      undefined,
+      [createFile('backup.zip')],
+    );
+
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      uploaded: [], skipped: [], failed: [], interrupted: ['backup.zip'],
+    });
+  });
+
   it('should count uploads cancelled by a forced stop as interrupted, not failed', async () => {
     const stopController = new AbortController();
     const cancelController = new AbortController();

@@ -121,6 +121,12 @@ export const syncDestination = async (
         );
       }
 
+      // Hashing a large file takes a while: a stop may have been requested meanwhile.
+      if (signal?.aborted) {
+        interrupted.push(file.name);
+        return;
+      }
+
       try {
         await provider.uploadFile(file, path, { signal, cancelSignal });
       } catch (error) {
