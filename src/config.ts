@@ -42,7 +42,7 @@ const defaultsSchema = z.strictObject({
 
 const infomaniakUrlSchema = z.url({
   protocol: /^https$/,
-  hostname: /^ksuite.infomaniak\.com$/,
+  hostname: /^ksuite\.infomaniak\.com$/,
   error: 'Must be a valid KDrive URL starting with https://ksuite.infomaniak.com',
 });
 
