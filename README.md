@@ -29,7 +29,8 @@ The app needs three things: a config file, your data folders, and an API token.
 Mount a `config.yml` file into `/config` inside the container. Example:
 
 ```yaml
-schedule: '0 0 * * *' # cron expression, defaults to daily at midnight
+schedule: '0 0 * * *' # standard 5-field cron expression, defaults to daily at midnight
+runOnStart: false # also run a backup as soon as the container starts, defaults to false
 
 infomaniak:
   folderUrl: 'https://ksuite.infomaniak.com/02468/kdrive/app/drive/12345/files/67890' # URL of the destination kDrive folder
@@ -46,6 +47,14 @@ folders:
 ```
 
 `infomaniak.folderUrl` is the URL of the kDrive folder you see in your browser when browsing to the destination folder — it's used to resolve the drive and root folder IDs.
+
+`schedule` must be a standard 5-field cron expression (`minute hour day-of-month month day-of-week`): a leading seconds field and `@daily`-style aliases are rejected.
+
+The config is validated strictly at startup. The app refuses to start, with an error naming the offending field, when:
+
+- a key is unknown, e.g. a typo such as `retension: 10` (`folders.0: Unrecognized key: "retension"`);
+- two folders share the same `destination` (`/backups/app` and `backups/app/` count as the same);
+- `schedule` is not a valid standard cron expression.
 
 ### 2. Data volume
 

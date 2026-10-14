@@ -68,6 +68,36 @@ describe('BackupScheduler', () => {
     scheduler.stop();
   });
 
+  it('should run a backup on init when runOnStart is enabled', async () => {
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createMockLogger(),
+      [],
+      { schedule: '0 3 * * *', runOnStart: true },
+    );
+    const runBackup = vi.spyOn(scheduler, 'runBackup').mockResolvedValue(undefined);
+
+    scheduler.init();
+
+    await vi.waitFor(() => expect(runBackup).toHaveBeenCalledTimes(1));
+    scheduler.stop();
+  });
+
+  it('should not run a backup on init by default', () => {
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createMockLogger(),
+      [],
+      { schedule: '0 3 * * *' },
+    );
+    const runBackup = vi.spyOn(scheduler, 'runBackup').mockResolvedValue(undefined);
+
+    scheduler.init();
+
+    expect(runBackup).not.toHaveBeenCalled();
+    scheduler.stop();
+  });
+
   it('should sync once per destination and aggregate the results', async () => {
     const provider = createMockProvider();
     const mockLogger = {

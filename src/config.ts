@@ -6,16 +6,20 @@ import YAML from 'yaml';
 import { z } from 'zod';
 
 export const DATA_FOLDER = '/data';
+export const CRON_MODE = '5-part';
 const CONFIG_FILE_NAME = 'config.yml';
 const CONFIG_FOLDER = '/config';
 
 const cronSchema = z.string()
-  .min(9, 'Schedule is required')
+  .refine(
+    (schedule) => schedule.trim().split(/\s+/).length === 5,
+    { error: 'Schedule must be a standard 5-field cron expression', abort: true },
+  )
   .refine(
     (schedule) => {
       try {
         // eslint-disable-next-line no-new
-        new Cron(schedule);
+        new Cron(schedule, { mode: CRON_MODE });
         return true;
       } catch {
         return false;
@@ -32,7 +36,7 @@ const retentionSchema = z.union([
 
 export type Retention = z.infer<typeof retentionSchema>;
 
-const defaultsSchema = z.object({
+const defaultsSchema = z.strictObject({
   retention: retentionSchema.default(3),
 }).prefault({});
 
@@ -42,17 +46,46 @@ const infomaniakUrlSchema = z.url({
   error: 'Must be a valid KDrive URL starting with https://ksuite.infomaniak.com',
 });
 
-const configSchema = z.object({
+const normalizeDestination = (destination: string): string => {
+  const normalized = path.posix.normalize(`/${destination}`);
+
+  return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
+};
+
+const foldersSchema = z.array(z.strictObject({
+  source: z.string().min(1, 'Source folder is required'),
+  destination: z.string().min(1, 'Destination folder is required'),
+  retention: retentionSchema.optional(),
+}))
+  .min(1, 'At least one folder mapping is required')
+  .superRefine((folders, ctx) => {
+    const firstIndexByDestination = new Map<string, number>();
+
+    folders.forEach((folder, index) => {
+      const destination = normalizeDestination(folder.destination);
+      const firstIndex = firstIndexByDestination.get(destination);
+
+      if (firstIndex === undefined) {
+        firstIndexByDestination.set(destination, index);
+        return;
+      }
+
+      ctx.addIssue({
+        code: 'custom',
+        path: [index, 'destination'],
+        message: `Destination "${destination}" is already used by folders.${firstIndex}`,
+      });
+    });
+  });
+
+const configSchema = z.strictObject({
   schedule: cronSchema,
+  runOnStart: z.boolean().default(false),
   defaults: defaultsSchema,
-  infomaniak: z.object({
+  infomaniak: z.strictObject({
     folderUrl: infomaniakUrlSchema,
-  }).required(),
-  folders: z.array(z.object({
-    source: z.string().min(1, 'Source folder is required'),
-    destination: z.string().min(1, 'Destination folder is required'),
-    retention: retentionSchema.optional(),
-  })).min(1, 'At least one folder mapping is required'),
+  }),
+  folders: foldersSchema,
 });
 
 export type Config = z.infer<typeof configSchema>;
