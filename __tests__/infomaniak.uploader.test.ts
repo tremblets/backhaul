@@ -339,6 +339,26 @@ describe('InfomaniakProvider', () => {
       expect(scope.isDone()).toBe(true);
     });
 
+    it('should cancel the upload in progress once cancelSignal is aborted', async () => {
+      const uploader = createUploader(createMockLogger());
+      const controller = new AbortController();
+
+      nock('https://api.infomaniak.com')
+        .post('/3/drive/12345/upload')
+        .query(true)
+        .delay(2_000)
+        .reply(200, { result: 'success', data: { id: 1234, name: 'test-file.txt' } });
+
+      const uploading = uploader.uploadFile(
+        new File(['Hello, world!'], 'test-file.txt'),
+        undefined,
+        { signal: controller.signal, cancelSignal: controller.signal },
+      );
+      controller.abort();
+
+      await expect(uploading).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
     it('should refuse files larger than 1 GiB without sending anything', async () => {
       const uploader = createUploader(createMockLogger());
       const file = new File(['x'], 'huge.zip');

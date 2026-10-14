@@ -288,6 +288,41 @@ describe('syncDestination', () => {
     expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
+  it('should count uploads cancelled by a forced stop as interrupted, not failed', async () => {
+    const stopController = new AbortController();
+    const cancelController = new AbortController();
+    const provider = createMockProvider({
+      uploadFile: vi.fn().mockImplementation(async (
+        _file: File,
+        _path: string | undefined,
+        options: { cancelSignal: AbortSignal },
+      ) => new Promise<void>((_resolve, reject) => {
+        options.cancelSignal.addEventListener('abort', () => reject(new Error('aborted')));
+      })),
+    });
+
+    const syncing = syncDestination(
+      {
+        provider,
+        retention: 1,
+        logger: createMockLogger(),
+        signal: stopController.signal,
+        cancelSignal: cancelController.signal,
+      },
+      undefined,
+      [createFile('a.zip')],
+    );
+
+    await vi.waitFor(() => expect(provider.uploadFile).toHaveBeenCalledTimes(1));
+    stopController.abort();
+    cancelController.abort();
+
+    expect(await syncing).toEqual({
+      uploaded: [], skipped: [], failed: [], interrupted: ['a.zip'],
+    });
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
   it('should do nothing when the number of remote files is within the retention limit', async () => {
     const provider = createMockProvider({
       listFiles: vi.fn().mockResolvedValue([

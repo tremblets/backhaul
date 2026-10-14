@@ -28,7 +28,10 @@ program
       logger.info('Starting manual backup');
       const scheduler = await bootstrap(logger);
 
-      handleShutdownSignals(logger, async () => scheduler.shutdown());
+      handleShutdownSignals(logger, {
+        shutdown: async () => scheduler.shutdown(),
+        cancel: () => scheduler.cancel(),
+      });
 
       const result = await scheduler.runBackup();
 

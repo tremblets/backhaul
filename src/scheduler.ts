@@ -151,7 +151,11 @@ class BackupScheduler {
 
   #job?: Cron;
 
-  #currentRun?: { controller: AbortController; promise: Promise<BackupRunResult> };
+  #currentRun?: {
+    stopController: AbortController;
+    cancelController: AbortController;
+    promise: Promise<BackupRunResult>;
+  };
 
   #stopRequested = false;
 
@@ -231,13 +235,18 @@ class BackupScheduler {
   }
 
   async runBackup(): Promise<BackupRunResult> {
-    const controller = new AbortController();
+    const stopController = new AbortController();
+    const cancelController = new AbortController();
 
     if (this.#stopRequested) {
-      controller.abort();
+      stopController.abort();
     }
 
-    const currentRun = { controller, promise: this.#run(controller.signal) };
+    const currentRun = {
+      stopController,
+      cancelController,
+      promise: this.#run(stopController.signal, cancelController.signal),
+    };
     this.#currentRun = currentRun;
 
     try {
@@ -249,7 +258,7 @@ class BackupScheduler {
     }
   }
 
-  async #run(signal: AbortSignal): Promise<BackupRunResult> {
+  async #run(signal: AbortSignal, cancelSignal: AbortSignal): Promise<BackupRunResult> {
     const logger = this.#logger.child({ runId: randomUUID() });
 
     logger.info('Starting backup job');
@@ -280,7 +289,7 @@ class BackupScheduler {
 
         const groupResult = await syncDestination(
           {
-            provider: this.#provider, retention: group.retention, logger, signal,
+            provider: this.#provider, retention: group.retention, logger, signal, cancelSignal,
           },
           group.destination,
           files,
@@ -365,13 +374,21 @@ class BackupScheduler {
       return;
     }
 
-    currentRun.controller.abort();
+    currentRun.stopController.abort();
 
     try {
       await currentRun.promise;
     } catch {
       // Already reported by whoever started the run.
     }
+  }
+
+  /**
+   * Forced stop, meant to follow `shutdown()`: also cancels the uploads in flight, which count
+   * as interrupted.
+   */
+  cancel(): void {
+    this.#currentRun?.cancelController.abort();
   }
 }
 

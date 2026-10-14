@@ -1,16 +1,24 @@
 import type { Logger } from 'pino';
 
+interface ShutdownHandlers {
+  /** Graceful stop: lets in-flight uploads finish. */
+  shutdown: () => Promise<void>;
+  /** Forced stop: cancels in-flight uploads so the process can exit on its own. */
+  cancel: () => void;
+}
+
 /**
- * First SIGTERM/SIGINT runs `shutdown` (graceful stop), a second one exits immediately.
+ * First SIGTERM/SIGINT runs `shutdown`, a second one runs `cancel` and sets the exit code to 1.
  */
-const handleShutdownSignals = (logger: Logger, shutdown: () => Promise<void>): void => {
+const handleShutdownSignals = (logger: Logger, { shutdown, cancel }: ShutdownHandlers): void => {
   let stopping = false;
 
   const onSignal = (signal: NodeJS.Signals): void => {
     if (stopping) {
-      logger.warn({ signal }, 'Second signal received, exiting immediately');
-      // eslint-disable-next-line n/no-process-exit -- forced exit is the point of a second signal
-      process.exit(1);
+      logger.warn({ signal }, 'Second signal received, cancelling in-flight uploads');
+      process.exitCode = 1;
+      cancel();
+      return;
     }
 
     stopping = true;

@@ -123,7 +123,7 @@ On `SIGTERM` (`docker stop`, `docker compose down`) or `SIGINT`, the app stops g
 - no new upload starts: the remaining files and folders are picked up by the next run;
 - retention is not applied to an interrupted run, so nothing gets deleted on the way out.
 
-Docker kills the container 10 seconds after `docker stop` by default, which is usually too short for an upload to finish. Give it more time with `stop_grace_period` (Compose) or `--stop-timeout` (`docker run`), as in the examples above: 5 minutes is enough for files up to 1 GB on most connections. A second signal exits immediately.
+Docker kills the container 10 seconds after `docker stop` by default, which is usually too short for an upload to finish. Give it more time with `stop_grace_period` (Compose) or `--stop-timeout` (`docker run`), as in the examples above: 5 minutes is enough for files up to 1 GB on most connections. A second signal cancels the uploads in progress: the app exits within seconds with code `1`, and the cancelled files are uploaded again on the next run.
 
 ## Running a backup manually
 
@@ -133,7 +133,7 @@ The image also exposes a `backup` CLI (`/usr/local/bin/backup`) for running a si
 docker exec backhaul backup start
 ```
 
-The command exits with code `0` when everything succeeded, and `1` when a file upload, a retention deletion or a folder failed (details in the logs), or when the run was stopped. `Ctrl+C` stops it gracefully like `SIGTERM` above, a second `Ctrl+C` exits immediately.
+The command exits with code `0` when everything succeeded, and `1` when a file upload, a retention deletion or a folder failed (details in the logs), or when the run was stopped. `Ctrl+C` stops it gracefully like `SIGTERM` above, a second `Ctrl+C` cancels the uploads in progress and exits right after.
 
 ## Volumes summary
 

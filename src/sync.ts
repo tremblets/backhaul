@@ -23,6 +23,8 @@ export interface SyncContext {
   logger: Logger;
   /** Once aborted, no new upload starts and retention is skipped; in-flight uploads finish. */
   signal?: AbortSignal;
+  /** Once aborted, in-flight uploads are cancelled too; they count as interrupted. */
+  cancelSignal?: AbortSignal;
 }
 
 const purgeBeyondRetention = async (
@@ -72,7 +74,7 @@ export const syncDestination = async (
   files: File[],
 ): Promise<SyncResult> => {
   const {
-    provider, retention, logger, signal,
+    provider, retention, logger, signal, cancelSignal,
   } = context;
 
   if (files.length === 0 && retention === false) {
@@ -119,7 +121,16 @@ export const syncDestination = async (
         );
       }
 
-      await provider.uploadFile(file, path, { signal });
+      try {
+        await provider.uploadFile(file, path, { signal, cancelSignal });
+      } catch (error) {
+        if (cancelSignal?.aborted) {
+          interrupted.push(file.name);
+          return;
+        }
+
+        throw error;
+      }
 
       logger.info({ fileName: file.name }, 'Successfully uploaded');
 

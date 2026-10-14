@@ -135,6 +135,7 @@ const postFile = async (
   url: string,
   token: string,
   file: File,
+  signal?: AbortSignal,
 ): Promise<{ status: number; body: string }> => {
   const req = request(url, {
     method: 'POST',
@@ -142,6 +143,7 @@ const postFile = async (
       Authorization: `Bearer ${token}`,
       'Content-Length': file.size,
     },
+    signal,
   });
 
   req.setTimeout(UPLOAD_IDLE_TIMEOUT_MS, () => {
@@ -422,7 +424,7 @@ class InfomaniakProvider implements BackupProvider {
   async uploadFile(
     file: File,
     path?: string,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; cancelSignal?: AbortSignal } = {},
   ): Promise<void> {
     if (file.size > MAX_DIRECT_UPLOAD_SIZE) {
       throw new Error(
@@ -443,6 +445,7 @@ class InfomaniakProvider implements BackupProvider {
           `${this.#baseV3}/${this.#driveId}/upload?${queryParams}`,
           this.#token,
           file,
+          options.cancelSignal,
         );
 
         if (response.status < 200 || response.status >= 300) {

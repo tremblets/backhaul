@@ -14,9 +14,12 @@ const main = async () => {
 
   logger.info('App starting');
 
-  handleShutdownSignals(logger, async () => {
-    await scheduler.shutdown();
-    logger.info('Stopped');
+  handleShutdownSignals(logger, {
+    shutdown: async () => {
+      await scheduler.shutdown();
+      logger.info('Stopped');
+    },
+    cancel: () => scheduler.cancel(),
   });
 
   scheduler.init();

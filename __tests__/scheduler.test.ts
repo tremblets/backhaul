@@ -169,14 +169,22 @@ describe('BackupScheduler', () => {
     expect(syncDestination).toHaveBeenCalledTimes(2);
     expect(syncDestination).toHaveBeenCalledWith(
       {
-        provider, retention: 3, logger: mockLogger, signal: expect.any(AbortSignal),
+        provider,
+        retention: 3,
+        logger: mockLogger,
+        signal: expect.any(AbortSignal),
+        cancelSignal: expect.any(AbortSignal),
       },
       './dest1',
       expect.arrayContaining([expect.objectContaining({ name: 'file1.txt' })]),
     );
     expect(syncDestination).toHaveBeenCalledWith(
       {
-        provider, retention: 3, logger: mockLogger, signal: expect.any(AbortSignal),
+        provider,
+        retention: 3,
+        logger: mockLogger,
+        signal: expect.any(AbortSignal),
+        cancelSignal: expect.any(AbortSignal),
       },
       './dest2',
       expect.arrayContaining([expect.objectContaining({ name: 'file2.txt' })]),
@@ -256,6 +264,7 @@ describe('BackupScheduler', () => {
     const stopping = scheduler.shutdown();
     const [context] = vi.mocked(syncDestination).mock.calls[0];
     expect(context.signal?.aborted).toBe(true);
+    expect(context.cancelSignal?.aborted).toBe(false);
     expect(scheduler.nextRun()).toBeNull();
 
     releaseFirstDestination?.({
@@ -269,6 +278,41 @@ describe('BackupScheduler', () => {
     expect(result.interrupted).toEqual(['file2.txt']);
     expect(result.stopped).toBe(true);
     expect(isSuccessful(result)).toBe(false);
+  });
+
+  it('should cancel the uploads in flight on a forced stop after shutdown', async () => {
+    let releaseDestination: ((result: SyncResult) => void) | undefined;
+
+    vi.mocked(syncDestination).mockImplementationOnce(async () => new Promise((resolve) => {
+      releaseDestination = resolve;
+    }));
+    vi.mocked(stat).mockResolvedValue(folderStat);
+    vi.mocked(readdir).mockResolvedValue(asDirents(['file1.txt']));
+    vi.mocked(openAsBlob).mockResolvedValue(new Blob(['test content']));
+
+    const scheduler = new BackupScheduler(
+      createMockProvider(),
+      createRecordingLogger(),
+      [{ source: './folder1', destination: './dest1', retention: 3 }],
+      { schedule: '0 3 * * *' },
+    );
+
+    const running = scheduler.runBackup();
+    await vi.waitFor(() => expect(syncDestination).toHaveBeenCalledTimes(1));
+
+    const stopping = scheduler.shutdown();
+    scheduler.cancel();
+    const [context] = vi.mocked(syncDestination).mock.calls[0];
+    expect(context.cancelSignal?.aborted).toBe(true);
+
+    releaseDestination?.({
+      uploaded: [], skipped: [], failed: [], interrupted: ['file1.txt'],
+    });
+    await stopping;
+    const result = await running;
+
+    expect(result.interrupted).toEqual(['file1.txt']);
+    expect(result.stopped).toBe(true);
   });
 
   it('should not upload anything in a run started after shutdown', async () => {
